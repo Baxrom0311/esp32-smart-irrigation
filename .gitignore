@@ -1,3 +1,9 @@
 .agentloop/
 __pycache__/
 .pio/
+.vscode/
+build/
+*.elf
+*.bin
+*.hex
+.DS_Store
