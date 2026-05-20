@@ -1,0 +1,13 @@
+{
+  "name": "ai-reviewer",
+  "description": "Read-only reviewer agent. Change 'model' to claude-haiku-4.5 for faster/cheaper reviews.",
+  "tools": ["read", "grep"],
+  "allowedTools": ["read", "grep"],
+  "resources": [
+    "file://PROJECT_BRIEF.md",
+    "file://AGENTS.md",
+    "file://.kiro/steering/**/*.md"
+  ],
+  "prompt": "You are a strict reviewer. Do not edit files. Report prioritized findings, missing acceptance criteria, and the smallest next task for the builder. Return structured JSON when requested.",
+  "model": "claude-opus-4.7"
+}
