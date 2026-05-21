@@ -34,14 +34,20 @@ void settingsLoadDefaults(Settings& out) {
     out.tank2RawWet = DEFAULT_TANK_RAW_WET;
     out.soilRawDry  = DEFAULT_SOIL_RAW_DRY;
     out.soilRawWet  = DEFAULT_SOIL_RAW_WET;
+    out.soil2RawDry = DEFAULT_SOIL_RAW_DRY;
+    out.soil2RawWet = DEFAULT_SOIL_RAW_WET;
     // WiFi STA
     out.staSSID[0] = '\0';
     out.staPass[0] = '\0';
     // Telegram
-    out.tgEnabled = false;
-    out.tgToken[0] = '\0';
-    out.tgChatCount = 0;
+    out.tgEnabled = DEFAULT_TG_ENABLED;
+    strncpy(out.tgToken, DEFAULT_TG_TOKEN, sizeof(out.tgToken) - 1);
+    out.tgToken[sizeof(out.tgToken) - 1] = '\0';
+    out.tgChatCount = DEFAULT_TG_CHAT_COUNT;
     memset(out.tgChatIds, 0, sizeof(out.tgChatIds));
+    strncpy(out.tgChatIds[0], DEFAULT_TG_CHAT_ID_1, MAX_TG_CHAT_ID_LEN);
+    strncpy(out.tgChatIds[1], DEFAULT_TG_CHAT_ID_2, MAX_TG_CHAT_ID_LEN);
+    strncpy(out.tgChatIds[2], DEFAULT_TG_CHAT_ID_3, MAX_TG_CHAT_ID_LEN);
 }
 
 bool settingsClamp(Settings& s) {
@@ -120,6 +126,15 @@ bool settingsClamp(Settings& s) {
     }
     s.soilRawDry = sd; s.soilRawWet = sw;
 
+    uint16_t s2d = clampRaw(s.soil2RawDry);
+    uint16_t s2w = clampRaw(s.soil2RawWet);
+    if (s2d != s.soil2RawDry || s2w != s.soil2RawWet) changed = true;
+    if (absDiff(s2d, s2w) < MIN_CAL_SPAN) {
+        s2d = DEFAULT_SOIL_RAW_DRY; s2w = DEFAULT_SOIL_RAW_WET;
+        changed = true;
+    }
+    s.soil2RawDry = s2d; s.soil2RawWet = s2w;
+
     return changed;
 }
 
@@ -157,6 +172,8 @@ bool storageLoadSettings(Settings& out) {
     out.tank2RawWet = g_prefs.getUShort(NVS_KEY_T2_WET, DEFAULT_TANK_RAW_WET);
     out.soilRawDry  = g_prefs.getUShort(NVS_KEY_S_DRY,  DEFAULT_SOIL_RAW_DRY);
     out.soilRawWet  = g_prefs.getUShort(NVS_KEY_S_WET,  DEFAULT_SOIL_RAW_WET);
+    out.soil2RawDry = g_prefs.getUShort(NVS_KEY_S2_DRY, DEFAULT_SOIL_RAW_DRY);
+    out.soil2RawWet = g_prefs.getUShort(NVS_KEY_S2_WET, DEFAULT_SOIL_RAW_WET);
 
     String ssid = g_prefs.getString(NVS_KEY_SSID, DEFAULT_AP_SSID);
     String pass = g_prefs.getString(NVS_KEY_PASS, DEFAULT_AP_PASSWORD);
@@ -231,6 +248,8 @@ bool storageSaveSettings(const Settings& s) {
     ok &= (g_prefs.putUShort(NVS_KEY_T2_WET, tmp.tank2RawWet) != 0);
     ok &= (g_prefs.putUShort(NVS_KEY_S_DRY,  tmp.soilRawDry)  != 0);
     ok &= (g_prefs.putUShort(NVS_KEY_S_WET,  tmp.soilRawWet)  != 0);
+    ok &= (g_prefs.putUShort(NVS_KEY_S2_DRY, tmp.soil2RawDry) != 0);
+    ok &= (g_prefs.putUShort(NVS_KEY_S2_WET, tmp.soil2RawWet) != 0);
     // WiFi STA
     g_prefs.putString(NVS_KEY_STA_SSID, tmp.staSSID);
     g_prefs.putString(NVS_KEY_STA_PASS, tmp.staPass);

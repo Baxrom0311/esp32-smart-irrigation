@@ -312,7 +312,8 @@
 <div class="grid">
   <div class="card" id="c-tank1"><h2>Tank 1</h2><div class="val"><span id="tank1">--</span>%</div><div class="bar"><div id="bar-tank1" style="width:0"></div></div></div>
   <div class="card" id="c-tank2"><h2>Tank 2</h2><div class="val"><span id="tank2">--</span>%</div><div class="bar"><div id="bar-tank2" style="width:0"></div></div></div>
-  <div class="card" id="c-soil"><h2>Soil moisture</h2><div class="val"><span id="soil">--</span>%</div><div class="bar"><div id="bar-soil" style="width:0"></div></div></div>
+  <div class="card" id="c-soil1"><h2>Soil 1 (Agarot 1)</h2><div class="val"><span id="soil1">--</span>%</div><div class="bar"><div id="bar-soil1" style="width:0"></div></div></div>
+  <div class="card" id="c-soil2"><h2>Soil 2 (Agarot 2)</h2><div class="val"><span id="soil2">--</span>%</div><div class="bar"><div id="bar-soil2" style="width:0"></div></div></div>
   <div class="card" id="c-temp"><h2>Temperature</h2><div class="val"><span id="temp">--</span>°C</div></div>
   <div class="card" id="c-hum"><h2>Humidity</h2><div class="val"><span id="hum">--</span>%</div></div>
   <div class="card"><h2>Pumps</h2>
@@ -384,12 +385,14 @@ async function tick(){
     const setBar=(id,p)=>{const el=document.getElementById(id); if(el) el.style.width=Math.max(0,Math.min(100,p))+'%';};
     set('tank1', d.tank1Err?'ERR':d.tank1); setBar('bar-tank1', d.tank1Err?0:d.tank1);
     set('tank2', d.tank2Err?'ERR':d.tank2); setBar('bar-tank2', d.tank2Err?0:d.tank2);
-    set('soil',  d.soilErr ?'ERR':d.soil ); setBar('bar-soil',  d.soilErr ?0:d.soil );
+    set('soil1', d.soil1Err?'ERR':d.soil1); setBar('bar-soil1', d.soil1Err?0:d.soil1);
+    set('soil2', d.soil2Err?'ERR':d.soil2); setBar('bar-soil2', d.soil2Err?0:d.soil2);
     set('temp',  (d.dhtErr || d.temp == null) ? 'ERR' : Number(d.temp).toFixed(1));
     set('hum',   (d.dhtErr || d.hum  == null) ? 'ERR' : Number(d.hum ).toFixed(0));
     document.getElementById('c-tank1').classList.toggle('err', !!d.tank1Err);
     document.getElementById('c-tank2').classList.toggle('err', !!d.tank2Err);
-    document.getElementById('c-soil' ).classList.toggle('err', !!d.soilErr);
+    document.getElementById('c-soil1').classList.toggle('err', !!d.soil1Err);
+    document.getElementById('c-soil2').classList.toggle('err', !!d.soil2Err);
     document.getElementById('c-temp' ).classList.toggle('err', !!d.dhtErr);
     document.getElementById('c-hum'  ).classList.toggle('err', !!d.dhtErr);
     set('pump1', d.pump1?'ON':'OFF'); document.getElementById('pump1').className = d.pump1?'ok':'warn';
@@ -526,11 +529,17 @@ async function setPump(p, on, secId){
     <label>Wet endpoint (raw)</label>
     <input type="number" name="tank2_wet" min="0" max="4095" required>
   </div>
-  <div class="card" style="margin-top:12px"><h2>Soil</h2>
+  <div class="card" style="margin-top:12px"><h2>Soil 1 (Agarot 1)</h2>
     <label>Dry endpoint (raw, typically 4095)</label>
     <input type="number" name="soil_dry" min="0" max="4095" required>
     <label>Wet endpoint (raw, typically 0)</label>
     <input type="number" name="soil_wet" min="0" max="4095" required>
+  </div>
+  <div class="card" style="margin-top:12px"><h2>Soil 2 (Agarot 2)</h2>
+    <label>Dry endpoint (raw, typically 4095)</label>
+    <input type="number" name="soil2_dry" min="0" max="4095" required>
+    <label>Wet endpoint (raw, typically 0)</label>
+    <input type="number" name="soil2_wet" min="0" max="4095" required>
   </div>
   <div class="row">
     <button type="submit">Save calibration</button>
@@ -545,6 +554,8 @@ async function load(){
   document.querySelector('[name=tank2_wet]').value=d.tank2.wet;
   document.querySelector('[name=soil_dry]').value =d.soil.dry;
   document.querySelector('[name=soil_wet]').value =d.soil.wet;
+  document.querySelector('[name=soil2_dry]').value=d.soil2.dry;
+  document.querySelector('[name=soil2_wet]').value=d.soil2.wet;
 }
 async function save(e){
   e.preventDefault();
@@ -555,7 +566,8 @@ async function save(e){
   const body={
     tank1:{dry:Number(f.tank1_dry.value), wet:Number(f.tank1_wet.value)},
     tank2:{dry:Number(f.tank2_dry.value), wet:Number(f.tank2_wet.value)},
-    soil :{dry:Number(f.soil_dry.value),  wet:Number(f.soil_wet.value)}
+    soil :{dry:Number(f.soil_dry.value),  wet:Number(f.soil_wet.value)},
+    soil2:{dry:Number(f.soil2_dry.value), wet:Number(f.soil2_wet.value)}
   };
   try{
     const r=await fetch('/api/calibrate',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
@@ -570,8 +582,9 @@ load();
 
   static const char PAGE_SETTINGS[] PROGMEM = R"HTML(
 <div id="msg"></div>
-<form id="f" onsubmit="save(event)">
+<form id="f">
   <div class="card">
+    <h2>Irrigation</h2>
     <label>Soil threshold % (auto mode trigger)</label>
     <input type="number" name="threshold" min="0" max="100" required>
     <label>Min water level % (dry-run protection)</label>
@@ -580,13 +593,31 @@ load();
     <input type="number" name="max_time" min="1" max="60" required>
     <label>Mode</label>
     <select name="auto_mode"><option value="true">AUTO</option><option value="false">MANUAL</option></select>
-    <label>WiFi AP SSID (1–32 chars)</label>
+  </div>
+  <div class="card">
+    <h2>WiFi AP (local hotspot)</h2>
+    <label>SSID (1–32 chars)</label>
     <input type="text" name="ssid" maxlength="32" required>
-    <label>WiFi AP password (8–63 chars, leave blank to keep current)</label>
+    <label>Password (8–63 chars, blank = keep current)</label>
     <input type="password" name="pass" minlength="8" maxlength="63">
   </div>
+  <div class="card">
+    <h2>WiFi STA (internet connection)</h2>
+    <label>Router SSID (blank = no internet)</label>
+    <input type="text" name="sta_ssid" maxlength="32">
+    <label>Router password (blank = keep current)</label>
+    <input type="password" name="sta_pass" maxlength="63">
+  </div>
+  <div class="card">
+    <h2>Telegram Bot</h2>
+    <label><input type="checkbox" name="tg_enabled"> Enable notifications</label>
+    <label>Bot token (blank = keep current)</label>
+    <input type="text" name="tg_token" maxlength="64" placeholder="123456:ABC-DEF...">
+    <label>Chat IDs (comma separated, max 5)</label>
+    <input type="text" name="tg_chats" placeholder="549517499,1331915608">
+  </div>
   <div class="row">
-    <button type="submit">Save</button>
+    <button type="button" onclick="save()">Save</button>
     <button type="button" class="danger" onclick="resetAll()">Factory reset</button>
   </div>
 </form>
@@ -599,17 +630,16 @@ async function load(){
   document.querySelector('[name=max_time]').value=d.max_time;
   document.querySelector('[name=auto_mode]').value=d.auto_mode?'true':'false';
   document.querySelector('[name=ssid]').value=d.ssid;
+  document.querySelector('[name=sta_ssid]').value=d.sta_ssid||'';
+  document.querySelector('[name=tg_enabled]').checked=!!d.tg_enabled;
+  document.querySelector('[name=tg_chats]').value=(d.tg_chats||[]).join(',');
 }
-async function save(e){
-  e.preventDefault();
-  const f=e.target;
+async function save(){
+  const f=document.getElementById('f');
   const m=document.getElementById('msg');
   m.style.display='block'; m.style.padding='10px'; m.style.borderRadius='8px'; m.style.color='#fff'; m.style.marginBottom='12px';
   const ssid=f.ssid.value;
   const pass=f.pass.value;
-  // Client-side preflight: catch obvious WPA2 / SSID violations
-  // before round-tripping to the server. Server still re-validates;
-  // these checks just give faster feedback through the same banner.
   if (ssid.length === 0)        { m.textContent='Error: ssid_required';      m.style.background='#cf3636'; return; }
   if (ssid.length > 32)         { m.textContent='Error: ssid_too_long';      m.style.background='#cf3636'; return; }
   if (pass.length > 0 && pass.length < 8) { m.textContent='Error: pass_too_short (WPA2 needs 8+ chars)'; m.style.background='#cf3636'; return; }
@@ -619,16 +649,20 @@ async function save(e){
     min_water:Number(f.min_water.value),
     max_time :Number(f.max_time.value),
     auto_mode:f.auto_mode.value==='true',
-    ssid     :ssid
+    ssid     :ssid,
+    sta_ssid :f.sta_ssid.value,
+    tg_enabled:document.querySelector('[name=tg_enabled]').checked
   };
-  // Only send `pass` if the user actually typed one. A blank field
-  // means "keep current"; sending pass:"" would (correctly) be
-  // rejected by the server as `open_ap_not_allowed`.
   if (pass.length > 0) body.pass = pass;
+  if (f.sta_pass.value.length > 0) body.sta_pass = f.sta_pass.value;
+  if (f.tg_token.value.length > 0) body.tg_token = f.tg_token.value;
+  const chats = f.tg_chats.value.split(',').map(s=>s.trim()).filter(s=>s.length>0);
+  if (chats.length > 0) body.tg_chats = chats;
+  const payload=JSON.stringify(body);
   try{
-    const r=await fetch('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:payload});
     const d=await r.json();
-    m.textContent = r.ok ? 'Saved.' : ('Error: '+(d.error||'?'));
+    m.textContent = r.ok ? 'Saved.' : ('Error: '+(d.error||r.status));
     m.style.background = r.ok ? '#1f6feb' : '#cf3636';
   }catch(err){ m.textContent='Request failed: '+err.message; m.style.background='#cf3636'; }
 }
@@ -685,7 +719,8 @@ load();
       StaticJsonDocument<640> d;
       d["tank1"]    = state.sensors.tank1Pct;
       d["tank2"]    = state.sensors.tank2Pct;
-      d["soil"]     = state.sensors.soilPct;
+      d["soil1"]    = state.sensors.soil1Pct;
+      d["soil2"]    = state.sensors.soil2Pct;
       // Send `null` instead of a 0.0 sentinel on DHT failure so the
       // client can disambiguate "no reading" from a real 0 °C value.
       if (state.sensors.dhtErr || isnan(state.sensors.tempC)) {
@@ -700,7 +735,8 @@ load();
       }
       d["tank1Err"] = state.sensors.tank1Err;
       d["tank2Err"] = state.sensors.tank2Err;
-      d["soilErr"]  = state.sensors.soilErr;
+      d["soil1Err"] = state.sensors.soil1Err;
+      d["soil2Err"] = state.sensors.soil2Err;
       d["dhtErr"]   = state.sensors.dhtErr;
       d["pump1"]    = state.pumps[0].on;
       d["pump2"]    = state.pumps[1].on;
@@ -750,22 +786,28 @@ load();
   // ---------- /api/settings GET ----------
 
   static void handleGetSettings(SystemState& state, AsyncWebServerRequest* req) {
-      StaticJsonDocument<256> d;
+      DynamicJsonDocument d(768);
       if (!state.mutex || xSemaphoreTake(state.mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
           sendJsonError(state, req, 503, "state busy");
           return;
       }
       d["threshold"] = state.settings.soilThresholdPct;
       d["min_water"] = state.settings.minWaterPct;
-      // Brief specifies max_time in minutes; we store seconds
-      // internally for FSM precision. Round to nearest minute.
       d["max_time"]  = (state.settings.maxPumpSeconds + 30) / 60;
       d["auto_mode"] = state.settings.autoMode;
-      // ArduinoJson v6 aliases `const char*` values; serialize while
-      // we still hold the mutex so a concurrent SSID change cannot
-      // tear the response.
       d["ssid"]      = state.settings.ssid;
-      d["pass"]      = "***";  // redacted (string literal, copy-safe)
+      d["pass"]      = "***";
+      // WiFi STA
+      d["sta_ssid"]  = state.settings.staSSID;
+      d["sta_pass"]  = "***";
+      // Telegram
+      d["tg_enabled"]    = state.settings.tgEnabled;
+      d["tg_token"]      = state.settings.tgToken[0] ? "***" : "";
+      d["tg_chat_count"] = state.settings.tgChatCount;
+      JsonArray chats = d.createNestedArray("tg_chats");
+      for (uint8_t i = 0; i < state.settings.tgChatCount; i++) {
+          chats.add(state.settings.tgChatIds[i]);
+      }
       AUDIT_JSON_DOC(d, "/api/settings GET");
       String out;
       serializeJson(d, out);
@@ -779,7 +821,7 @@ load();
   static void handlePostSettings(SystemState& state,
                                  AsyncWebServerRequest* req,
                                  const char* body, size_t len) {
-      StaticJsonDocument<512> d;
+      DynamicJsonDocument d(768);
       DeserializationError err = deserializeJson(d, body, len);
       if (err) { sendJsonError(state, req, 400, err.c_str()); return; }
 
@@ -823,6 +865,13 @@ load();
           patch.allowOpen = d["allow_open"].as<bool>();
       }
 
+      // WiFi STA + Telegram fields (applied directly to ns after patch)
+      bool hasStaSsid = d.containsKey("sta_ssid");
+      bool hasStaPass = d.containsKey("sta_pass");
+      bool hasTgEnabled = d.containsKey("tg_enabled");
+      bool hasTgToken = d.containsKey("tg_token");
+      bool hasTgChats = d.containsKey("tg_chats");
+
       // Snapshot current settings under the mutex. We capture both
       // `ns` (what we're about to mutate) and `prev` (rollback target
       // if the second mutex take fails after we've already persisted).
@@ -843,6 +892,34 @@ load();
       if (pr != SettingsPatchResult::Ok) {
           sendJsonError(state, req, 400, settingsPatchErrorText(pr));
           return;
+      }
+
+      // Apply STA/Telegram fields directly
+      if (hasStaSsid) {
+          const char* v = d["sta_ssid"].as<const char*>();
+          if (v) { strncpy(ns.staSSID, v, MAX_STA_SSID_LEN); ns.staSSID[MAX_STA_SSID_LEN] = '\0'; }
+      }
+      if (hasStaPass) {
+          const char* v = d["sta_pass"].as<const char*>();
+          if (v && strcmp(v, "***") != 0) { strncpy(ns.staPass, v, MAX_STA_PASS_LEN); ns.staPass[MAX_STA_PASS_LEN] = '\0'; }
+      }
+      if (hasTgEnabled) { ns.tgEnabled = d["tg_enabled"].as<bool>(); }
+      if (hasTgToken) {
+          const char* v = d["tg_token"].as<const char*>();
+          if (v && strcmp(v, "***") != 0) { strncpy(ns.tgToken, v, MAX_TG_TOKEN_LEN); ns.tgToken[MAX_TG_TOKEN_LEN] = '\0'; }
+      }
+      if (hasTgChats && d["tg_chats"].is<JsonArray>()) {
+          JsonArray arr = d["tg_chats"].as<JsonArray>();
+          ns.tgChatCount = 0;
+          for (JsonVariant c : arr) {
+              if (ns.tgChatCount >= MAX_TG_CHAT_IDS) break;
+              const char* id = c.as<const char*>();
+              if (id && id[0]) {
+                  strncpy(ns.tgChatIds[ns.tgChatCount], id, MAX_TG_CHAT_ID_LEN);
+                  ns.tgChatIds[ns.tgChatCount][MAX_TG_CHAT_ID_LEN] = '\0';
+                  ns.tgChatCount++;
+              }
+          }
       }
 
       // Defence in depth: settingsClamp() catches any numeric drift
@@ -986,6 +1063,7 @@ load();
       pair("tank1", cfg.tank1RawDry, cfg.tank1RawWet);
       pair("tank2", cfg.tank2RawDry, cfg.tank2RawWet);
       pair("soil",  cfg.soilRawDry,  cfg.soilRawWet);
+      pair("soil2", cfg.soil2RawDry, cfg.soil2RawWet);
       AUDIT_JSON_DOC(d, "/api/calibration");
       String out;
       serializeJson(d, out);
@@ -1029,6 +1107,8 @@ load();
                         patch.hasTank2Wet, patch.tank2Wet);
       readPair("soil",  patch.hasSoilDry,  patch.soilDry,
                         patch.hasSoilWet,  patch.soilWet);
+      readPair("soil2", patch.hasSoil2Dry, patch.soil2Dry,
+                        patch.hasSoil2Wet, patch.soil2Wet);
 
       // Snapshot under the mutex; validate-and-apply on the local copy
       // so a rejected patch never leaves RAM half-mutated.
@@ -1638,12 +1718,19 @@ void webserverTick(SystemState& state) {
 
     // ---- STA reconnect ------------------------------------------
     static uint32_t s_lastStaCheckMs = 0;
-    if (state.settings.staSSID[0] != '\0' &&
-        WiFi.status() != WL_CONNECTED &&
-        (now - s_lastStaCheckMs) >= STA_RECONNECT_INTERVAL_MS) {
+    if ((now - s_lastStaCheckMs) >= STA_RECONNECT_INTERVAL_MS) {
         s_lastStaCheckMs = now;
-        Serial.printf("[wifi] STA reconnecting to '%s'...\n", state.settings.staSSID);
-        WiFi.begin(state.settings.staSSID, state.settings.staPass);
+        char staSsid[MAX_STA_SSID_LEN + 1] = {0};
+        char staPass[MAX_STA_PASS_LEN + 2] = {0};
+        if (state.mutex && xSemaphoreTake(state.mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            strncpy(staSsid, state.settings.staSSID, sizeof(staSsid) - 1);
+            strncpy(staPass, state.settings.staPass, sizeof(staPass) - 1);
+            xSemaphoreGive(state.mutex);
+        }
+        if (staSsid[0] != '\0' && WiFi.status() != WL_CONNECTED) {
+            Serial.printf("[wifi] STA reconnecting to '%s'...\n", staSsid);
+            WiFi.begin(staSsid, staPass);
+        }
     }
 #else
     (void)state;

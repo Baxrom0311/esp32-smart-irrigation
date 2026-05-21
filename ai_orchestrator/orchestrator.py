@@ -421,6 +421,8 @@ def run_command(
 
 
 def run_shell(name: str, command: str, cwd: Path, timeout_sec: int = 120) -> CommandResult:
+    if sys.platform == "win32":
+        return run_command(name, ["powershell", "-NoProfile", "-Command", command], cwd=cwd, timeout_sec=timeout_sec)
     return run_command(name, ["bash", "-lc", command], cwd=cwd, timeout_sec=timeout_sec)
 
 

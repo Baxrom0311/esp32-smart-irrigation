@@ -302,7 +302,10 @@ void relaysTick(SystemState& state) {
 
         // 3) Auto-mode demand evaluation.
         if (cfg.autoMode) {
-            g_demand[i] = evaluateAutoDemand(s.soilPct, s.soilErr,
+            // Each pump uses its corresponding soil sensor (pump 0 → soil1, pump 1 → soil2)
+            uint8_t soilPct = (i == 0) ? s.soil1Pct : s.soil2Pct;
+            bool    soilErr = (i == 0) ? s.soil1Err : s.soil2Err;
+            g_demand[i] = evaluateAutoDemand(soilPct, soilErr,
                                              cfg.soilThresholdPct,
                                              g_demand[i]);
         }

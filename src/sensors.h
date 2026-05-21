@@ -78,6 +78,8 @@ struct CalibrationPatch {
     bool     hasTank2Wet = false;  uint16_t tank2Wet = 0;
     bool     hasSoilDry  = false;  uint16_t soilDry  = 0;
     bool     hasSoilWet  = false;  uint16_t soilWet  = 0;
+    bool     hasSoil2Dry = false;  uint16_t soil2Dry = 0;
+    bool     hasSoil2Wet = false;  uint16_t soil2Wet = 0;
 };
 
 CalibrationPatchResult applyCalibrationPatch(const CalibrationPatch& patch,

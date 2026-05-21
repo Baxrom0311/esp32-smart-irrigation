@@ -4,8 +4,8 @@
 // Do not introduce magic numbers in module sources; add a constant
 // here and reference it.
 //
-// All sensor analog pins are on ADC1 (GPIO32/34/35) so they coexist
-// with WiFi (ADC2 cannot be read while WiFi is active).
+// All sensor analog pins are on ADC1 (GPIO32/33/34/35) so they
+// coexist with WiFi (ADC2 cannot be read while WiFi is active).
 
 #pragma once
 
@@ -15,29 +15,25 @@
 // Hardware pin map (ESP32 DevKit V1)
 // ---------------------------------------------------------------------------
 
-// Water level sensors (analog, ADC1)
+// Water level sensors (MH analog, ADC1)
 #define PIN_WATER_TANK1     34
 #define PIN_WATER_TANK2     35
 
-// Soil moisture sensor (analog, ADC1) — note: inverted (3.3V = dry)
-#define PIN_SOIL_MOISTURE   32
+// Soil moisture sensors (Capacitive v1.2, analog, ADC1) — 2 ta agarot
+#define PIN_SOIL_MOISTURE1  32
+#define PIN_SOIL_MOISTURE2  33
 
-// DHT22 (AM2302) — temperature + humidity
-#define PIN_DHT22            4
-#define DHT_TYPE            22  // DHT22
+// DHT11 — temperature + humidity
+#define PIN_DHT             14
+#define DHT_TYPE            11  // DHT11
 
 // Pump relays (active LOW). Driven HIGH = OFF on boot.
 #define PIN_RELAY_PUMP1     26
 #define PIN_RELAY_PUMP2     27
 
-// TFT ILI9341 SPI pins are configured via TFT_eSPI build_flags in
-// platformio.ini. Listed here for documentation only:
-//   MOSI=23, MISO=19, SCK=18, CS=5, DC=2, RST=15, LED=3.3V
-
 // ---------------------------------------------------------------------------
 // Relay polarity
 // ---------------------------------------------------------------------------
-// Most blue Chinese 5V relay modules are ACTIVE LOW: drive LOW to energise.
 #define RELAY_ACTIVE_LEVEL  LOW
 #define RELAY_IDLE_LEVEL    HIGH
 
@@ -55,7 +51,6 @@
 // Cadence (milliseconds)
 // ---------------------------------------------------------------------------
 #define SENSORS_PERIOD_MS   2000  // sensor read cadence (brief: 2 s)
-#define DISPLAY_PERIOD_MS    250  // TFT refresh cadence
 #define RELAYS_PERIOD_MS     100  // safety FSM tick
 #define WDT_TIMEOUT_S         30  // task watchdog
 
@@ -96,77 +91,49 @@
 #define NVS_KEY_PASS         "pass"
 #define NVS_KEY_AUTO         "auto"
 #define NVS_KEY_VERSION      "ver"
-// Calibration endpoints (raw ADC values). Two per sensor — "dry"
-// (0% water-equivalent, fully dry soil) and "wet" (100% water,
-// fully wet soil). Stored as uint16_t; conversion is linear and
-// monotonic between them, in either direction.
 #define NVS_KEY_T1_DRY       "t1d"
 #define NVS_KEY_T1_WET       "t1w"
 #define NVS_KEY_T2_DRY       "t2d"
 #define NVS_KEY_T2_WET       "t2w"
 #define NVS_KEY_S_DRY        "sd"
 #define NVS_KEY_S_WET        "sw"
-// Schema bumped to 2 with calibration fields. Loaders fall back to
-// defaults on mismatch (legacy schema 1) so existing devices boot
-// cleanly after firmware upgrade.
-#define NVS_SCHEMA_VERSION   2
+#define NVS_KEY_S2_DRY       "s2d"
+#define NVS_KEY_S2_WET       "s2w"
+#define NVS_SCHEMA_VERSION   3
 
 // ---------------------------------------------------------------------------
 // Calibration defaults & sanity
 // ---------------------------------------------------------------------------
-// Default endpoints follow the wiring in PROJECT_BRIEF.md:
-//   Water level: 0V = empty (raw 0), 3.3V = full (raw 4095).
-//   Soil:        3.3V = dry  (raw 4095), 0V = wet (raw 0).
-// User can override via /api/calibrate to compensate for sensor
-// drift and the diode drops on cheap analog water-level boards.
+// MH Water level: 0V = empty (raw 0), 3.3V = full (raw 4095).
+// Capacitive Soil v1.2: ~3.3V = dry (raw 4095), ~1.5V = wet (raw ~1860).
 #define DEFAULT_TANK_RAW_DRY    0
 #define DEFAULT_TANK_RAW_WET    ADC_MAX_RAW
 #define DEFAULT_SOIL_RAW_DRY    ADC_MAX_RAW
 #define DEFAULT_SOIL_RAW_WET    0
 
-// Minimum absolute distance between dry and wet endpoints. Below
-// this we cannot produce stable percentage readings — a tiny span
-// magnifies sensor noise into 100% swings. 200 raw counts ≈ 5% of
-// ADC FS, which is the smallest realistic working range observed
-// on the cheap analog level boards used in this project.
 #define MIN_CAL_SPAN           200
 
 // ---------------------------------------------------------------------------
 // HTTP server
 // ---------------------------------------------------------------------------
 #define HTTP_PORT            80
-#define HTTP_MAX_BODY_BYTES  1024  // reject larger POST bodies
+#define HTTP_MAX_BODY_BYTES  1024
 
 // ---------------------------------------------------------------------------
 // Manual pump duration
 // ---------------------------------------------------------------------------
-// Maximum operator-requested manual pump duration (seconds) honoured
-// by /api/pump. The runtime-trip lockout (maxPumpSeconds) still caps
-// each session, so this is the upper bound on a single timed run
-// the web UI is allowed to schedule. We use the same 1..3600 range
-// as maxPumpSeconds so a request cannot meaningfully exceed it.
 #define MAX_MANUAL_PUMP_SECONDS  3600
 #define MIN_MANUAL_PUMP_SECONDS     1
 
 // ---------------------------------------------------------------------------
 // Heap monitoring
 // ---------------------------------------------------------------------------
-// Cadence and threshold for the periodic free-heap log line in
-// main.cpp. The threshold is a soft warning level — well above the
-// point where AsyncWebServer / WiFi start failing — so we get an
-// audit trail before a real OOM crash. Tuned for the ESP32 DevKit
-// V1, which boots at ~280 KB free.
-#define HEAP_LOG_PERIOD_MS         (60UL * 1000UL)  // 60 s
-#define HEAP_LOW_THRESHOLD_BYTES   (20U * 1024U)    // 20 KB
+#define HEAP_LOG_PERIOD_MS         (60UL * 1000UL)
+#define HEAP_LOW_THRESHOLD_BYTES   (20U * 1024U)
 
 // ---------------------------------------------------------------------------
 // AP health watchdog
 // ---------------------------------------------------------------------------
-// Polls WiFi.softAPIP() every AP_HEALTH_CHECK_PERIOD_MS. If the AP
-// has been unhealthy (IP = 0.0.0.0) continuously for at least
-// AP_HEALTH_FAIL_TIMEOUT_MS, schedule a soft-AP restart. The
-// timeout is generous so a transient client-driven blip during AP
-// peer churn does not provoke a needless restart.
 #define AP_HEALTH_CHECK_PERIOD_MS   5000UL
 #define AP_HEALTH_FAIL_TIMEOUT_MS  30000UL
 
@@ -185,12 +152,19 @@
 // ---------------------------------------------------------------------------
 // Telegram bot
 // ---------------------------------------------------------------------------
+#define DEFAULT_TG_TOKEN       "8828743889:AAGoeF42Q9SWmMngbjxMyvtmuSFPuyZXEel"
+#define DEFAULT_TG_ENABLED     true
+#define DEFAULT_TG_CHAT_COUNT  3
+#define DEFAULT_TG_CHAT_ID_1   "549517499"
+#define DEFAULT_TG_CHAT_ID_2   "1331915608"
+#define DEFAULT_TG_CHAT_ID_3   "5146421024"
+
 #define MAX_TG_TOKEN_LEN       64
-#define MAX_TG_CHAT_IDS        5     // max 5 ta chat_id saqlash
-#define MAX_TG_CHAT_ID_LEN     16    // "-1001234567890" = 14 char
-#define TG_SEND_INTERVAL_MS    2000UL  // min interval between messages
-#define TG_QUEUE_SIZE          8       // pending messages queue
+#define MAX_TG_CHAT_IDS        5
+#define MAX_TG_CHAT_ID_LEN     16
+#define TG_SEND_INTERVAL_MS    2000UL
+#define TG_QUEUE_SIZE          8
 #define NVS_KEY_TG_TOKEN       "tgtkn"
 #define NVS_KEY_TG_CHAT_CNT    "tgcnt"
-#define NVS_KEY_TG_CHAT_PFX    "tgc"   // tgc0, tgc1, tgc2...
+#define NVS_KEY_TG_CHAT_PFX    "tgc"
 #define NVS_KEY_TG_ENABLED     "tgen"

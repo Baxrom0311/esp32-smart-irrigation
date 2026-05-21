@@ -144,3 +144,54 @@ POST /api/pump       → {"pump": 1, "state": true}
 POST /api/settings   → {"threshold": 40, "min_water": 20, "max_time": 30, "ssid": "...", "pass": "..."}
 GET  /api/settings   → current settings JSON
 ```
+
+## Current State (2026-05-21)
+
+The firmware compiles and runs on ESP32. The following is DONE:
+- Pin config: Water MH sensors GPIO34/35, Capacitive Soil v1.2 GPIO32/33, DHT11 GPIO14, Relays GPIO26/27
+- 2 soil sensors (one per agarot/pump)
+- TFT display removed (no screen)
+- Telegram bot with ArduinoJson-safe serialization
+- WiFi AP+STA dual mode with reconnect
+- Web UI: Dashboard, Control, Settings (with STA + Telegram), Calibration (with soil2)
+- NVS schema v3 with all new fields
+- Rate limiting, event log, metrics, AP health watchdog
+
+## Remaining Tasks for Orchestrator
+
+Priority order — fix bugs first, then improve:
+
+1. **BUG: "empty body" error on Settings save** — The browser sometimes sends a double POST (one with body, one empty). The form was changed to `type="button"` + `onclick` but verify it works. If the error persists, investigate ESPAsyncWebServer body handling. The server-side `[storage] settings saved` log confirms the save works, but the browser shows "Error: empty body" — this means TWO requests are being sent.
+
+2. **BUG: WiFi STA AUTH_FAIL** — When STA credentials are wrong, the device retries every 30s forever. Add a retry limit (e.g., 5 attempts) then stop until next reboot or settings change. Log the failure count.
+
+3. **Web UI improvements:**
+   - Control page: show soil1/soil2 values per pump (not just pump on/off)
+   - Dashboard: show WiFi STA connection status (connected/disconnected/connecting)
+   - Settings: show current STA connection status
+
+4. **Telegram notifications integration:**
+   - Send notification on pump lockout (dry-run, runtime, sensor)
+   - Send notification on WiFi STA connect/disconnect
+   - Send periodic status summary (every 6 hours)
+
+5. **Code quality:**
+   - Ensure all JSON endpoints use DynamicJsonDocument (not Static) to avoid stack overflow on AsyncTCP task
+   - Add serial debug logging for POST /api/settings (log what was received)
+   - Verify native tests pass (need gcc installed or skip)
+
+6. **Safety:**
+   - Each agarot should be independently controllable (already done: pump1→soil1, pump2→soil2)
+   - Verify dry-run protection works with 2 tanks (tank1→pump1, tank2→pump2)
+
+## Hardware Pin Map (FINAL)
+
+| Function | GPIO | Notes |
+|----------|------|-------|
+| Water tank 1 (MH sensor) | 34 | ADC1 ch6 |
+| Water tank 2 (MH sensor) | 35 | ADC1 ch7 |
+| Soil moisture 1 (Agarot 1) | 32 | ADC1 ch4, Capacitive v1.2 |
+| Soil moisture 2 (Agarot 2) | 33 | ADC1 ch5, Capacitive v1.2 |
+| DHT11 | 14 | with 4.7kΩ pull-up |
+| Pump 1 relay (Agarot 1) | 26 | active LOW |
+| Pump 2 relay (Agarot 2) | 27 | active LOW |

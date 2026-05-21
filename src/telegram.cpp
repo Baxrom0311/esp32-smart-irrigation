@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <ArduinoJson.h>
 #include "config.h"
 
 // Simple ring-buffer message queue
@@ -13,7 +14,7 @@ static uint8_t g_qHead = 0, g_qTail = 0, g_qCount = 0;
 static uint32_t g_lastSendMs = 0;
 
 static void enqueue(const char* msg) {
-    if (g_qCount >= TG_QUEUE_SIZE) return; // drop oldest? no, drop newest
+    if (g_qCount >= TG_QUEUE_SIZE) return;
     strncpy(g_queue[g_qTail], msg, 159);
     g_queue[g_qTail][159] = '\0';
     g_qTail = (g_qTail + 1) % TG_QUEUE_SIZE;
@@ -32,20 +33,21 @@ static bool sendToChat(const char* token, const char* chatId, const char* text) 
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(5000);
 
-    char body[300];
-    // Escape basic chars in text for JSON
-    snprintf(body, sizeof(body),
-             "{\"chat_id\":\"%s\",\"text\":\"%s\",\"parse_mode\":\"HTML\"}",
-             chatId, text);
+    // ArduinoJson handles all JSON escaping (quotes, backslashes, unicode)
+    StaticJsonDocument<384> doc;
+    doc["chat_id"] = chatId;
+    doc["text"] = text;
+    doc["parse_mode"] = "HTML";
+
+    char body[384];
+    serializeJson(doc, body, sizeof(body));
 
     int code = http.POST(body);
     http.end();
     return (code >= 200 && code < 300);
 }
 
-void telegramBegin(SystemState& /*state*/) {
-    // Nothing to init — WiFi STA handles connection
-}
+void telegramBegin(SystemState& /*state*/) {}
 
 void telegramTick(SystemState& state) {
     if (!state.settings.tgEnabled) return;
@@ -57,7 +59,6 @@ void telegramTick(SystemState& state) {
     uint32_t now = millis();
     if ((now - g_lastSendMs) < TG_SEND_INTERVAL_MS) return;
 
-    // Send one message per tick (non-blocking pattern)
     const char* msg = g_queue[g_qHead];
     for (uint8_t i = 0; i < state.settings.tgChatCount; i++) {
         sendToChat(state.settings.tgToken, state.settings.tgChatIds[i], msg);
@@ -74,19 +75,19 @@ void telegramSend(SystemState& state, const char* msg) {
 
 void telegramNotifyPumpOn(SystemState& state, uint8_t pump) {
     char buf[80];
-    snprintf(buf, sizeof(buf), "💧 Nasos %d <b>YOQILDI</b>", pump + 1);
+    snprintf(buf, sizeof(buf), "💧 Nasos %d YOQILDI", pump + 1);
     telegramSend(state, buf);
 }
 
 void telegramNotifyPumpOff(SystemState& state, uint8_t pump) {
     char buf[80];
-    snprintf(buf, sizeof(buf), "⏹ Nasos %d <b>O'CHIRILDI</b>", pump + 1);
+    snprintf(buf, sizeof(buf), "⏹ Nasos %d O'CHIRILDI", pump + 1);
     telegramSend(state, buf);
 }
 
 void telegramNotifyLowWater(SystemState& state, uint8_t tank, uint8_t pct) {
     char buf[80];
-    snprintf(buf, sizeof(buf), "⚠️ Tank %d suv kam: <b>%d%%</b>", tank + 1, pct);
+    snprintf(buf, sizeof(buf), "⚠️ Tank %d suv kam: %d%%", tank + 1, pct);
     telegramSend(state, buf);
 }
 

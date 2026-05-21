@@ -939,12 +939,29 @@ void test_calpatch_error_text_matches_api_contract(void) {
         calibrationPatchErrorText(CalibrationPatchResult::SpanTooSmall));
 }
 
+void test_calpatch_soil2_applies(void) {
+    Settings s = make_cal_baseline();
+    CalibrationPatch p;
+    p.hasSoil2Dry = true; p.soil2Dry = 3800;
+    p.hasSoil2Wet = true; p.soil2Wet = 200;
+    auto r = applyCalibrationPatch(p, s);
+    TEST_ASSERT_EQUAL((int)CalibrationPatchResult::Ok, (int)r);
+    TEST_ASSERT_EQUAL_UINT16(3800, s.soil2RawDry);
+    TEST_ASSERT_EQUAL_UINT16(200,  s.soil2RawWet);
+}
+
+void test_calpatch_soil2_rejects_small_span(void) {
+    Settings s = make_cal_baseline();
+    CalibrationPatch p;
+    p.hasSoil2Dry = true; p.soil2Dry = 2000;
+    p.hasSoil2Wet = true; p.soil2Wet = 2100;  // span 100 < 200
+    auto r = applyCalibrationPatch(p, s);
+    TEST_ASSERT_EQUAL((int)CalibrationPatchResult::SpanTooSmall, (int)r);
+}
+
 // ---------- settingsClamp recovers degenerate calibration ----------
 
 void test_clamp_resets_degenerate_calibration_to_defaults(void) {
-    // NVS corruption corner case: span < MIN_CAL_SPAN. Loader must
-    // restore working defaults rather than ship a calibration that
-    // produces 0% always.
     Settings s;
     settingsLoadDefaults(s);
     s.soilRawDry = 1000;
@@ -953,6 +970,17 @@ void test_clamp_resets_degenerate_calibration_to_defaults(void) {
     TEST_ASSERT_TRUE(changed);
     TEST_ASSERT_EQUAL_UINT16(DEFAULT_SOIL_RAW_DRY, s.soilRawDry);
     TEST_ASSERT_EQUAL_UINT16(DEFAULT_SOIL_RAW_WET, s.soilRawWet);
+}
+
+void test_clamp_resets_degenerate_soil2_calibration(void) {
+    Settings s;
+    settingsLoadDefaults(s);
+    s.soil2RawDry = 500;
+    s.soil2RawWet = 600;  // span 100 < 200
+    bool changed = settingsClamp(s);
+    TEST_ASSERT_TRUE(changed);
+    TEST_ASSERT_EQUAL_UINT16(DEFAULT_SOIL_RAW_DRY, s.soil2RawDry);
+    TEST_ASSERT_EQUAL_UINT16(DEFAULT_SOIL_RAW_WET, s.soil2RawWet);
 }
 
 // ---------- Event ring buffer (Build 3 observability) ----------
@@ -1503,8 +1531,11 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_calpatch_rejects_partial_change_breaking_span);
     RUN_TEST(test_calpatch_inverted_pair_is_legal);
     RUN_TEST(test_calpatch_error_text_matches_api_contract);
+    RUN_TEST(test_calpatch_soil2_applies);
+    RUN_TEST(test_calpatch_soil2_rejects_small_span);
 
     RUN_TEST(test_clamp_resets_degenerate_calibration_to_defaults);
+    RUN_TEST(test_clamp_resets_degenerate_soil2_calibration);
 
     RUN_TEST(test_eventlog_init_is_empty);
     RUN_TEST(test_eventlog_add_orders_oldest_first);

@@ -39,6 +39,8 @@ struct Settings {
     uint16_t tank2RawWet;
     uint16_t soilRawDry;
     uint16_t soilRawWet;
+    uint16_t soil2RawDry;
+    uint16_t soil2RawWet;
     // WiFi STA (internet uchun)
     char     staSSID[MAX_STA_SSID_LEN + 1];
     char     staPass[MAX_STA_PASS_LEN + 2];
@@ -55,12 +57,14 @@ struct Settings {
 struct SensorReading {
     uint8_t  tank1Pct;
     uint8_t  tank2Pct;
-    uint8_t  soilPct;
+    uint8_t  soil1Pct;     // Agarot 1
+    uint8_t  soil2Pct;     // Agarot 2
     float    tempC;
     float    humPct;
     bool     tank1Err;
     bool     tank2Err;
-    bool     soilErr;
+    bool     soil1Err;
+    bool     soil2Err;
     bool     dhtErr;
     uint32_t lastUpdateMs;
 };

@@ -23,17 +23,16 @@
   #include <Arduino.h>
   #include <DHT.h>
 
-  static DHT g_dht(PIN_DHT22, DHT_TYPE);
+  static DHT g_dht(PIN_DHT, DHT_TYPE);
   static uint32_t g_lastReadMs = 0;
   static uint8_t  g_tank1Streak = 0;
   static uint8_t  g_tank2Streak = 0;
-  static uint8_t  g_soilStreak  = 0;
-  // Last-tick error flags so we can fire an event-log line on the
-  // rising edge (clean → faulted) only, not every tick the sensor
-  // remains stuck. The DHT path runs the same logic.
+  static uint8_t  g_soil1Streak = 0;
+  static uint8_t  g_soil2Streak = 0;
   static bool     g_prevTank1Err = false;
   static bool     g_prevTank2Err = false;
-  static bool     g_prevSoilErr  = false;
+  static bool     g_prevSoil1Err = false;
+  static bool     g_prevSoil2Err = false;
   static bool     g_prevDhtErr   = false;
 #endif
 
@@ -122,27 +121,28 @@ CalibrationPatchResult applyCalibrationPatch(const CalibrationPatch& patch,
     if (patch.hasTank2Wet && !rangeOk(patch.tank2Wet)) return CalibrationPatchResult::OutOfRange;
     if (patch.hasSoilDry  && !rangeOk(patch.soilDry))  return CalibrationPatchResult::OutOfRange;
     if (patch.hasSoilWet  && !rangeOk(patch.soilWet))  return CalibrationPatchResult::OutOfRange;
+    if (patch.hasSoil2Dry && !rangeOk(patch.soil2Dry)) return CalibrationPatchResult::OutOfRange;
+    if (patch.hasSoil2Wet && !rangeOk(patch.soil2Wet)) return CalibrationPatchResult::OutOfRange;
 
     // ---- Phase 1b: post-merge span check per sensor. ----
-    // For each sensor we compute what the (dry, wet) pair would be
-    // after applying the patch and require span ≥ MIN_CAL_SPAN. If
-    // only one half is being changed we still validate against the
-    // other half's stored value, otherwise a single bad write could
-    // leave the sensor with a sub-threshold span.
     uint16_t t1d = patch.hasTank1Dry ? patch.tank1Dry : out.tank1RawDry;
     uint16_t t1w = patch.hasTank1Wet ? patch.tank1Wet : out.tank1RawWet;
     uint16_t t2d = patch.hasTank2Dry ? patch.tank2Dry : out.tank2RawDry;
     uint16_t t2w = patch.hasTank2Wet ? patch.tank2Wet : out.tank2RawWet;
     uint16_t sd  = patch.hasSoilDry  ? patch.soilDry  : out.soilRawDry;
     uint16_t sw  = patch.hasSoilWet  ? patch.soilWet  : out.soilRawWet;
+    uint16_t s2d = patch.hasSoil2Dry ? patch.soil2Dry : out.soil2RawDry;
+    uint16_t s2w = patch.hasSoil2Wet ? patch.soil2Wet : out.soil2RawWet;
 
     bool t1Touch = patch.hasTank1Dry || patch.hasTank1Wet;
     bool t2Touch = patch.hasTank2Dry || patch.hasTank2Wet;
     bool sTouch  = patch.hasSoilDry  || patch.hasSoilWet;
+    bool s2Touch = patch.hasSoil2Dry || patch.hasSoil2Wet;
 
     if (t1Touch && !spanOk(t1d, t1w)) return CalibrationPatchResult::SpanTooSmall;
     if (t2Touch && !spanOk(t2d, t2w)) return CalibrationPatchResult::SpanTooSmall;
     if (sTouch  && !spanOk(sd,  sw))  return CalibrationPatchResult::SpanTooSmall;
+    if (s2Touch && !spanOk(s2d, s2w)) return CalibrationPatchResult::SpanTooSmall;
 
     // ---- Phase 2: apply. ----
     if (patch.hasTank1Dry) out.tank1RawDry = patch.tank1Dry;
@@ -151,6 +151,8 @@ CalibrationPatchResult applyCalibrationPatch(const CalibrationPatch& patch,
     if (patch.hasTank2Wet) out.tank2RawWet = patch.tank2Wet;
     if (patch.hasSoilDry)  out.soilRawDry  = patch.soilDry;
     if (patch.hasSoilWet)  out.soilRawWet  = patch.soilWet;
+    if (patch.hasSoil2Dry) out.soil2RawDry = patch.soil2Dry;
+    if (patch.hasSoil2Wet) out.soil2RawWet = patch.soil2Wet;
     return CalibrationPatchResult::Ok;
 }
 
@@ -181,7 +183,8 @@ void sensorsBegin(SystemState& state) {
     analogSetAttenuation(ADC_11db);
     pinMode(PIN_WATER_TANK1, INPUT);
     pinMode(PIN_WATER_TANK2, INPUT);
-    pinMode(PIN_SOIL_MOISTURE, INPUT);
+    pinMode(PIN_SOIL_MOISTURE1, INPUT);
+    pinMode(PIN_SOIL_MOISTURE2, INPUT);
 
     g_dht.begin();
     g_lastReadMs = 0;
@@ -204,11 +207,13 @@ void sensorsTick(SystemState& state) {
 
     uint16_t rawT1 = readAdcAveraged(PIN_WATER_TANK1);
     uint16_t rawT2 = readAdcAveraged(PIN_WATER_TANK2);
-    uint16_t rawS  = readAdcAveraged(PIN_SOIL_MOISTURE);
+    uint16_t rawS1 = readAdcAveraged(PIN_SOIL_MOISTURE1);
+    uint16_t rawS2 = readAdcAveraged(PIN_SOIL_MOISTURE2);
 
     bool t1Err = updateStuckStreak(rawT1, g_tank1Streak);
     bool t2Err = updateStuckStreak(rawT2, g_tank2Streak);
-    bool sErr  = updateStuckStreak(rawS,  g_soilStreak);
+    bool s1Err = updateStuckStreak(rawS1, g_soil1Streak);
+    bool s2Err = updateStuckStreak(rawS2, g_soil2Streak);
 
     float t = g_dht.readTemperature();
     float h = g_dht.readHumidity();
@@ -216,26 +221,24 @@ void sensorsTick(SystemState& state) {
                                        || h <   0.0f || h > 100.0f;
 
     if (state.mutex && xSemaphoreTake(state.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        // Snapshot calibration under the mutex (a /api/calibrate
-        // request runs on the AsyncTCP task and may have updated
-        // these between ticks).
         const Settings cfg = state.settings;
         state.sensors.tank1Pct = t1Err ? 0
             : rawToPct(rawT1, cfg.tank1RawDry, cfg.tank1RawWet);
         state.sensors.tank2Pct = t2Err ? 0
             : rawToPct(rawT2, cfg.tank2RawDry, cfg.tank2RawWet);
-        state.sensors.soilPct  = sErr ? 0
-            : rawToPct(rawS,  cfg.soilRawDry,  cfg.soilRawWet);
+        state.sensors.soil1Pct = s1Err ? 0
+            : rawToPct(rawS1, cfg.soilRawDry,  cfg.soilRawWet);
+        state.sensors.soil2Pct = s2Err ? 0
+            : rawToPct(rawS2, cfg.soil2RawDry, cfg.soil2RawWet);
         state.sensors.tempC    = dhtErr ? NAN : t;
         state.sensors.humPct   = dhtErr ? NAN : h;
         state.sensors.tank1Err = t1Err;
         state.sensors.tank2Err = t2Err;
-        state.sensors.soilErr  = sErr;
+        state.sensors.soil1Err = s1Err;
+        state.sensors.soil2Err = s2Err;
         state.sensors.dhtErr   = dhtErr;
         state.sensors.lastUpdateMs = now;
 
-        // Rising-edge metrics + event log. We are inside the mutex,
-        // so eventLogAdd() (pure helper) is race-free here.
         struct EdgeSpec {
             bool         err;
             bool&        prev;
@@ -243,7 +246,8 @@ void sensorsTick(SystemState& state) {
         } edges[] = {
             { t1Err,  g_prevTank1Err, "tank 1" },
             { t2Err,  g_prevTank2Err, "tank 2" },
-            { sErr,   g_prevSoilErr,  "soil"   },
+            { s1Err,  g_prevSoil1Err, "soil 1" },
+            { s2Err,  g_prevSoil2Err, "soil 2" },
             { dhtErr, g_prevDhtErr,   "dht"    },
         };
         for (auto& e : edges) {

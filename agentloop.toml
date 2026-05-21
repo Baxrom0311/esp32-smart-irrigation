@@ -21,7 +21,7 @@ backoff_max = 60
 jitter = true
 
 [budget]
-max_cost_usd = 8.0
+max_cost_usd = 15.0
 warn_at_pct = 80
 cost_per_build_usd = 0.15
 cost_per_review_usd = 0.05
@@ -60,9 +60,9 @@ timeout_sec = 7200
 trust_all_tools = true
 
 [telegram]
-enabled = false
-bot_token = ""
-chat_id = ""
+enabled = true
+bot_token = "8828743889:AAGoeF42Q9SWmMngbjxMyvtmuSFPuyZXEel"
+chat_id = "549517499"
 
 [git]
 auto_push = false

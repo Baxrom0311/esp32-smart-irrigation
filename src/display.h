@@ -1,7 +1,5 @@
-// display.h — TFT UI public interface.
-
+// display.h — Display stub (no TFT hardware).
 #pragma once
-
 #include "state.h"
 
 void displayBegin(SystemState& state);
