@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 from collections import deque
 from typing import Any, Deque
@@ -418,11 +419,89 @@ async def post_settings(body: SettingsRequest):
 CHAT_SYSTEM_PROMPT = (
     "You are a friendly smart-irrigation assistant for a small greenhouse with "
     "two independent zones (soil sensor + water tank + pump per zone). "
-    "You speak Uzbek, Russian, and English fluently — reply in the same "
-    "language the user used. Be concise, practical, and use emoji for status: "
-    "✅ normal, ⚠️ warning, 🔴 critical. "
-    "Avoid lengthy disclaimers; give the user actionable advice."
+    "ALWAYS reply in Uzbek (lotin yozuvi), even if the user writes in another "
+    "language. Be concise, practical, and use emoji for status: "
+    "✅ normal, ⚠️ warning, 🔴 critical.\n\n"
+    "You CAN control pumps. The server detects pump on/off commands "
+    "(e.g. \"pump 1 ni yoq\", \"nasos 2 ni o'chir\", \"birinchi nasosni "
+    "yoqib ber\", \"pump off\") via keyword matching BEFORE calling you, "
+    "executes the override, and replies on your behalf — so when YOU are "
+    "called, the user is asking something else (advice, status, explanation). "
+    "If the user mentions a pump but the request is ambiguous, suggest the "
+    "exact phrase to use (e.g. \"1-nasosni yoq\" or \"2-nasosni o'chir\"). "
+    "Avoid lengthy disclaimers; give actionable advice."
 )
+
+
+# --- Pump command keyword detection ---------------------------------------
+
+# Apostrophe variants users might type for o'chir / to'xtat / etc.
+_APOSTROPHES = "'`ʼʻ‘’\u02bb\u02bc"
+
+
+def _normalize_apostrophes(text: str) -> str:
+    """Map all curly/back-tick apostrophes to a single ASCII apostrophe."""
+    out = text
+    for ch in _APOSTROPHES:
+        if ch != "'":
+            out = out.replace(ch, "'")
+    return out
+
+
+def _detect_pump_command(text: str) -> tuple[str | None, int | None]:
+    """Detect explicit pump on/off commands in Uzbek/English/Russian.
+
+    Returns (mode, pump) where:
+      mode: "on", "off", or None if no command detected.
+      pump: 1, 2, or None if pump not specified.
+
+    Matching is intentionally simple keyword-based; OFF tokens are checked
+    first because "o'chir" is more specific than "och...".
+    """
+    t = _normalize_apostrophes(text.lower().strip())
+
+    # OFF: explicit Uzbek/English shut-down verbs
+    off_substrings = ["o'chir", "to'xtat", "toxtat"]
+    off_words = [r"\boff\b", r"\bstop\b", r"\bвыключ\w*\b", r"\bотключ\w*\b"]
+
+    mode: str | None = None
+    if any(s in t for s in off_substrings) or any(re.search(p, t) for p in off_words):
+        mode = "off"
+
+    if mode is None:
+        # ON: yoq/yondir/ishlat/ochir (without apostrophe)/on/turn on
+        on_words = [
+            r"\byoq\w*\b",
+            r"\byondir\w*\b",
+            r"\bishlat\w*\b",
+            r"\bochir\w*\b",
+            r"\boch\b",
+            r"\bturn\s+on\b",
+            r"\bon\b",
+            r"\bвключ\w*\b",
+        ]
+        if any(re.search(p, t) for p in on_words):
+            mode = "on"
+
+    if mode is None:
+        return (None, None)
+
+    # Pump number: 2 first because "1" can appear as part of timestamps etc.
+    pump: int | None = None
+    pump2_patterns = [
+        r"\b2\b", r"\bikkinchi\b", r"\bikki\b",
+        r"pump\s*2", r"nasos\s*2", r"2[-\s]*nasos", r"\bвторой\b", r"\bвтором\b",
+    ]
+    pump1_patterns = [
+        r"\b1\b", r"\bbirinchi\b", r"\bbir\b",
+        r"pump\s*1", r"nasos\s*1", r"1[-\s]*nasos", r"\bпервый\b", r"\bпервом\b",
+    ]
+    if any(re.search(p, t) for p in pump2_patterns):
+        pump = 2
+    elif any(re.search(p, t) for p in pump1_patterns):
+        pump = 1
+
+    return (mode, pump)
 
 
 def _chat_context() -> str:
@@ -456,9 +535,52 @@ async def ai_chat(body: ChatRequest):
     user_msg = body.message.strip()
     chat_history.append({"role": "user", "content": user_msg})
 
+    # ----- Keyword pump control (no AI call needed) -----
+    mode, pump_num = _detect_pump_command(user_msg)
+    if mode is not None:
+        if pump_num is None:
+            reply = (
+                "🤔 Qaysi nasos? Iltimos, raqamini ayting.\n"
+                "Misol: \"1-nasosni yoq\" yoki \"2-nasosni o'chir\"."
+            )
+            chat_history.append({"role": "assistant", "content": reply})
+            return {
+                "reply": reply,
+                "ai_enabled": AI_ENABLED,
+                "action": "ask_pump",
+            }
+
+        # Apply override (same effect as Force ON/OFF buttons)
+        pump_overrides[pump_num] = mode
+        if mode == "on":
+            reply = (
+                f"✅ Nasos {pump_num} ga *yoqish* buyrug'i berildi. "
+                f"Qurilma keyingi aloqa paytida (~30 soniya ichida) "
+                f"nasosni ishga tushiradi.\n"
+                f"⚠️ Eslatma: agar tank suv darajasi {settings['tank_min']}% "
+                f"dan past bo'lsa yoki sensor xato bersa, xavfsizlik tizimi "
+                f"nasosni baribir ishlatmaydi."
+            )
+        else:
+            reply = (
+                f"🛑 Nasos {pump_num} ga *o'chirish* buyrug'i berildi. "
+                f"Qurilma keyingi aloqa paytida (~30 soniya ichida) "
+                f"nasosni to'xtatadi.\n"
+                f"Avto rejimga qaytarish uchun \"Avto\" tugmasini bosing."
+            )
+        chat_history.append({"role": "assistant", "content": reply})
+        return {
+            "reply": reply,
+            "ai_enabled": AI_ENABLED,
+            "action": "override",
+            "pump": pump_num,
+            "mode": mode,
+        }
+
+    # ----- Otherwise, fall through to AI chat -----
     if not AI_ENABLED:
         reply = (
-            "🔴 AI server sozlanmagan. .env faylida DEEPSEEK_API_KEY ni to‘ldiring "
+            "🔴 AI server sozlanmagan. .env faylida DEEPSEEK_API_KEY ni to'ldiring "
             "va serverni qayta ishga tushiring."
         )
         chat_history.append({"role": "assistant", "content": reply})
@@ -467,7 +589,7 @@ async def ai_chat(body: ChatRequest):
     full_prompt = CHAT_SYSTEM_PROMPT + "\n\nContext:\n" + _chat_context()
     reply = await ask_deepseek(full_prompt, user_msg, temperature=0.5, max_tokens=400)
     if not reply:
-        reply = "⚠️ AI bilan aloqa o‘rnatib bo‘lmadi. Keyinroq qayta urinib ko‘ring."
+        reply = "⚠️ AI bilan aloqa o'rnatib bo'lmadi. Keyinroq qayta urinib ko'ring."
     chat_history.append({"role": "assistant", "content": reply})
     return {"reply": reply, "ai_enabled": True}
 
@@ -575,7 +697,7 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   font-size:13px;
 }
 .statusbar .item{display:flex;align-items:center;gap:6px}
-#chart-wrap{position:relative;width:100%;height:240px}
+#chart-wrap{position:relative;width:100%;height:300px}
 #chart{width:100%;height:100%;display:block}
 .legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:12px;color:var(--muted)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
@@ -619,102 +741,103 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   .card .val{font-size:22px}
   main{padding:12px;gap:12px}
   section{padding:12px}
+  #chart-wrap{height:240px}
 }
 </style>
 </head>
 <body>
 <header>
   <h1>🌱 Smart Irrigation AI</h1>
-  <span id="conn" class="pill"><span class="dot"></span><span id="conn-text">connecting…</span></span>
+  <span id="conn" class="pill"><span class="dot"></span><span id="conn-text">ulanmoqda…</span></span>
 </header>
 
 <main>
   <div class="statusbar">
-    <div class="item"><strong>Device:</strong> <span id="device-state" class="muted">unknown</span></div>
-    <div class="item"><strong>Last seen:</strong> <span id="last-seen" class="muted">—</span></div>
+    <div class="item"><strong>Qurilma:</strong> <span id="device-state" class="muted">noma'lum</span></div>
+    <div class="item"><strong>Oxirgi aloqa:</strong> <span id="last-seen" class="muted">—</span></div>
     <div class="item"><strong>AI:</strong> <span id="ai-state" class="muted">—</span></div>
-    <div class="item"><strong>Decision:</strong> <span id="decision-source" class="muted">—</span></div>
+    <div class="item"><strong>Qaror:</strong> <span id="decision-source" class="muted">—</span></div>
   </div>
 
   <section>
-    <h2>Sensors</h2>
+    <h2>Sensorlar</h2>
     <div class="row cards">
-      <div class="card"><div class="label">Soil 1 (Zone 1)</div><div class="val"><span id="s1">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s1" style="width:0"></div></div></div>
-      <div class="card"><div class="label">Soil 2 (Zone 2)</div><div class="val"><span id="s2">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s2" style="width:0"></div></div></div>
+      <div class="card"><div class="label">Soil 1 (Zona 1)</div><div class="val"><span id="s1">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s1" style="width:0"></div></div></div>
+      <div class="card"><div class="label">Soil 2 (Zona 2)</div><div class="val"><span id="s2">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s2" style="width:0"></div></div></div>
       <div class="card"><div class="label">Tank 1</div><div class="val"><span id="t1">--</span><span class="unit">%</span></div><div class="bar"><div id="b-t1" style="width:0"></div></div></div>
       <div class="card"><div class="label">Tank 2</div><div class="val"><span id="t2">--</span><span class="unit">%</span></div><div class="bar"><div id="b-t2" style="width:0"></div></div></div>
-      <div class="card"><div class="label">Temperature</div><div class="val"><span id="temp">--</span><span class="unit">°C</span></div><div class="bar"><div id="b-temp" style="width:0"></div></div></div>
-      <div class="card"><div class="label">Air humidity</div><div class="val"><span id="hum">--</span><span class="unit">%</span></div><div class="bar"><div id="b-hum" style="width:0"></div></div></div>
+      <div class="card"><div class="label">Harorat</div><div class="val"><span id="temp">--</span><span class="unit">°C</span></div><div class="bar"><div id="b-temp" style="width:0"></div></div></div>
+      <div class="card"><div class="label">Havo namligi</div><div class="val"><span id="hum">--</span><span class="unit">%</span></div><div class="bar"><div id="b-hum" style="width:0"></div></div></div>
     </div>
   </section>
 
   <section>
-    <h2>Pumps</h2>
+    <h2>Nasoslar</h2>
     <div class="row pumps">
       <div class="pump">
         <div class="pump-head">
-          <div><div class="label muted" style="font-size:12px">Pump 1 (Zone 1)</div><div id="p1-state" class="pump-state off">OFF</div></div>
-          <div class="muted" style="font-size:12px;text-align:right" id="p1-mode">auto</div>
+          <div><div class="label muted" style="font-size:12px">Nasos 1 (Zona 1)</div><div id="p1-state" class="pump-state off">OFF</div></div>
+          <div class="muted" style="font-size:12px;text-align:right" id="p1-mode">avto</div>
         </div>
         <div class="pump-meta" id="p1-reason">—</div>
         <div class="btns">
-          <button class="btn" data-pump="1" data-mode="auto">Auto</button>
-          <button class="btn on" data-pump="1" data-mode="on">Force ON</button>
-          <button class="btn off" data-pump="1" data-mode="off">Force OFF</button>
+          <button class="btn" data-pump="1" data-mode="auto">Avto</button>
+          <button class="btn on" data-pump="1" data-mode="on">Yoqish</button>
+          <button class="btn off" data-pump="1" data-mode="off">O'chirish</button>
         </div>
       </div>
       <div class="pump">
         <div class="pump-head">
-          <div><div class="label muted" style="font-size:12px">Pump 2 (Zone 2)</div><div id="p2-state" class="pump-state off">OFF</div></div>
-          <div class="muted" style="font-size:12px;text-align:right" id="p2-mode">auto</div>
+          <div><div class="label muted" style="font-size:12px">Nasos 2 (Zona 2)</div><div id="p2-state" class="pump-state off">OFF</div></div>
+          <div class="muted" style="font-size:12px;text-align:right" id="p2-mode">avto</div>
         </div>
         <div class="pump-meta" id="p2-reason">—</div>
         <div class="btns">
-          <button class="btn" data-pump="2" data-mode="auto">Auto</button>
-          <button class="btn on" data-pump="2" data-mode="on">Force ON</button>
-          <button class="btn off" data-pump="2" data-mode="off">Force OFF</button>
+          <button class="btn" data-pump="2" data-mode="auto">Avto</button>
+          <button class="btn on" data-pump="2" data-mode="on">Yoqish</button>
+          <button class="btn off" data-pump="2" data-mode="off">O'chirish</button>
         </div>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>History (last 100 reports)</h2>
+    <h2>Tarix (oxirgi 100 yozuv)</h2>
     <div id="chart-wrap">
-      <svg id="chart" viewBox="0 0 800 240" preserveAspectRatio="none"></svg>
+      <svg id="chart" viewBox="0 0 800 300" preserveAspectRatio="none"></svg>
     </div>
     <div class="legend">
       <span><i style="background:#3ad29f"></i> Soil 1</span>
       <span><i style="background:#5ac8fa"></i> Soil 2</span>
       <span><i style="background:#fdba74"></i> Tank 1</span>
       <span><i style="background:#c084fc"></i> Tank 2</span>
-      <span class="muted" id="hist-count">0 points</span>
+      <span class="muted" id="hist-count">0 nuqta</span>
     </div>
   </section>
 
   <section>
-    <h2>🤖 AI Assistant</h2>
+    <h2>🤖 AI Yordamchi</h2>
     <div class="chat">
       <div id="msgs">
-        <div class="msg sys">Salom! Sug‘orish bo‘yicha savol bering. Masalan: «Bugun pomidorni sug‘orsam bo‘ladimi?»</div>
+        <div class="msg sys">Salom! Sug'orish bo'yicha savol bering yoki nasoslarni boshqaring. Masalan: «1-nasosni yoq», «2-nasosni o'chir» yoki «Bugun pomidorni sug'orsam bo'ladimi?»</div>
       </div>
       <div class="chat-input">
-        <input id="inp" placeholder="Savol bering…" autocomplete="off" onkeydown="if(event.key==='Enter')sendMsg()">
+        <input id="inp" placeholder="Savol bering yoki buyruq yozing…" autocomplete="off" onkeydown="if(event.key==='Enter')sendMsg()">
         <button id="send-btn" onclick="sendMsg()">→</button>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>⚙️ Settings (thresholds)</h2>
+    <h2>⚙️ Sozlamalar (chegaralar)</h2>
     <div class="settings-grid">
-      <div class="field"><label>Soil low (water below)</label><input type="number" id="set-soil-low" min="0" max="100"></div>
-      <div class="field"><label>Soil high (stop above)</label><input type="number" id="set-soil-high" min="0" max="100"></div>
-      <div class="field"><label>Tank min (dry-run)</label><input type="number" id="set-tank-min" min="0" max="100"></div>
-      <div class="field"><label>Max pump minutes</label><input type="number" id="set-max-min" min="1" max="240"></div>
+      <div class="field"><label>Tuproq quyi chegarasi</label><input type="number" id="set-soil-low" min="0" max="100"></div>
+      <div class="field"><label>Tuproq yuqori chegarasi</label><input type="number" id="set-soil-high" min="0" max="100"></div>
+      <div class="field"><label>Tank minimal</label><input type="number" id="set-tank-min" min="0" max="100"></div>
+      <div class="field"><label>Nasos max vaqti (min)</label><input type="number" id="set-max-min" min="1" max="240"></div>
     </div>
     <div class="settings-actions">
-      <button class="btn" style="flex:0 0 auto;padding:9px 18px" onclick="saveSettings()">Save</button>
+      <button class="btn" style="flex:0 0 auto;padding:9px 18px" onclick="saveSettings()">Saqlash</button>
     </div>
   </section>
 </main>
@@ -727,10 +850,16 @@ let lastSettings = null;
 
 // ---------- helpers ----------
 function fmtAge(sec){
-  if(sec==null) return 'never';
-  if(sec<60) return Math.round(sec)+'s ago';
-  if(sec<3600) return Math.round(sec/60)+'m ago';
-  return Math.round(sec/3600)+'h ago';
+  if(sec==null) return 'hech qachon';
+  if(sec<60) return Math.round(sec)+' soniya oldin';
+  if(sec<3600) return Math.round(sec/60)+' daqiqa oldin';
+  return Math.round(sec/3600)+' soat oldin';
+}
+function fmtAgeShort(sec){
+  if(sec==null || sec<30) return 'hozir';
+  if(sec<60) return Math.round(sec)+'s';
+  if(sec<3600) return Math.round(sec/60)+'m';
+  return Math.round(sec/3600)+'h';
 }
 function setBar(id,pct,kind){
   const el = $(id); if(!el) return;
@@ -769,11 +898,11 @@ async function poll(){
     // header pill
     const online = !!d.online;
     $('conn').firstElementChild.className = 'dot ' + (online?'ok':'err');
-    $('conn-text').textContent = online ? 'online' : 'offline';
-    $('device-state').textContent = online ? 'online' : 'offline';
+    $('conn-text').textContent = online ? 'ulangan' : 'uzilgan';
+    $('device-state').textContent = online ? 'ulangan' : 'uzilgan';
     $('device-state').className = online ? 'ok' : 'err';
     $('last-seen').textContent = fmtAge(d.age_seconds);
-    $('ai-state').textContent = d.ai_enabled ? 'enabled' : 'disabled';
+    $('ai-state').textContent = d.ai_enabled ? 'yoniq' : "o'chiq";
     $('ai-state').className = d.ai_enabled ? 'ok' : 'warn';
 
     // sensor cards
@@ -799,13 +928,14 @@ async function poll(){
     // pumps
     const dec = d.decision || {};
     const ovr = d.overrides || {'1':'auto','2':'auto'};
+    const modeUz = m => m==='on' ? 'yoqish' : m==='off' ? "o'chirish" : 'avto';
     function paintPump(num){
       const on = !!dec['pump'+num];
       const el = $('p'+num+'-state');
       el.textContent = on ? 'ON' : 'OFF';
       el.className = 'pump-state ' + (on?'on':'off');
       $('p'+num+'-reason').textContent = dec.reason || '—';
-      $('p'+num+'-mode').textContent = 'mode: ' + (ovr[String(num)]||'auto');
+      $('p'+num+'-mode').textContent = 'rejim: ' + modeUz(ovr[String(num)]||'auto');
       // highlight active override button
       document.querySelectorAll('.btn[data-pump="'+num+'"]').forEach(b=>{
         b.classList.toggle('active', b.dataset.mode === (ovr[String(num)]||'auto'));
@@ -813,7 +943,8 @@ async function poll(){
     }
     paintPump(1); paintPump(2);
 
-    $('decision-source').textContent = dec.source || '—';
+    const srcUz = {ai:'AI', rules:'lokal qoidalar', init:'—'};
+    $('decision-source').textContent = srcUz[dec.source] || dec.source || '—';
     $('decision-source').className = dec.source==='ai' ? 'ok' : (dec.source==='rules' ? 'warn' : 'muted');
 
     // settings (only fill if user is not currently editing)
@@ -825,7 +956,7 @@ async function poll(){
     }
   } catch(e){
     $('conn').firstElementChild.className = 'dot err';
-    $('conn-text').textContent = 'server error';
+    $('conn-text').textContent = 'server xatosi';
   }
 }
 
@@ -835,62 +966,148 @@ async function refreshChart(){
     const r = await fetch('/api/history?limit=100');
     const d = await r.json();
     const pts = d.items || [];
-    $('hist-count').textContent = pts.length + ' points';
+    $('hist-count').textContent = pts.length + ' nuqta';
     drawChart(pts);
   } catch(e){ /* ignore */ }
 }
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl(name, attrs){
+  const el = document.createElementNS(SVG_NS, name);
+  if(attrs) for(const k in attrs) el.setAttribute(k, attrs[k]);
+  return el;
+}
+
+// Catmull-Rom-to-Bezier smoothing for visually pleasant lines.
+function smoothPath(pts){
+  if(pts.length < 2) return '';
+  if(pts.length === 2){
+    return `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)} L${pts[1][0].toFixed(1)},${pts[1][1].toFixed(1)}`;
+  }
+  let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for(let i = 0; i < pts.length - 1; i++){
+    const p0 = pts[i-1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i+1];
+    const p3 = pts[i+2] || p2;
+    const cp1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const cp1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const cp2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const cp2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2[0].toFixed(1)},${p2[1].toFixed(1)}`;
+  }
+  return d;
+}
+
 function drawChart(pts){
   const svg = $('chart');
-  const W = 800, H = 240, pad = 24;
+  const W = 800, H = 300, padL = 38, padR = 14, padT = 14, padB = 28;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
   svg.innerHTML = '';
-  // background grid
-  for(let i=0;i<=4;i++){
-    const y = pad + i*(H-2*pad)/4;
-    const ln = document.createElementNS('http://www.w3.org/2000/svg','line');
-    ln.setAttribute('x1',pad); ln.setAttribute('x2',W-pad);
-    ln.setAttribute('y1',y); ln.setAttribute('y2',y);
-    ln.setAttribute('stroke','#1d2a44'); ln.setAttribute('stroke-width','1');
-    svg.appendChild(ln);
-    const txt = document.createElementNS('http://www.w3.org/2000/svg','text');
-    txt.setAttribute('x',4); txt.setAttribute('y',y+3);
-    txt.setAttribute('fill','#8aa0b8'); txt.setAttribute('font-size','10');
-    txt.textContent = (100-i*25)+'%';
-    svg.appendChild(txt);
+
+  const series = [
+    {key:'soil1', color:'#3ad29f', name:'Soil 1'},
+    {key:'soil2', color:'#5ac8fa', name:'Soil 2'},
+    {key:'tank1', color:'#fdba74', name:'Tank 1'},
+    {key:'tank2', color:'#c084fc', name:'Tank 2'},
+  ];
+
+  // <defs> with one linear gradient per series for the area fills.
+  const defs = svgEl('defs');
+  series.forEach(s => {
+    const g = svgEl('linearGradient', {
+      id: 'g-'+s.key, x1:'0', y1:'0', x2:'0', y2:'1',
+    });
+    g.appendChild(svgEl('stop', {offset:'0%',   'stop-color': s.color, 'stop-opacity':'0.35'}));
+    g.appendChild(svgEl('stop', {offset:'100%', 'stop-color': s.color, 'stop-opacity':'0'}));
+    defs.appendChild(g);
+  });
+  svg.appendChild(defs);
+
+  // Y-axis grid lines + labels (0/25/50/75/100%).
+  for(let i = 0; i <= 4; i++){
+    const y = padT + i * innerH / 4;
+    svg.appendChild(svgEl('line', {
+      x1: padL, x2: W - padR, y1: y, y2: y,
+      stroke:'#1d2a44', 'stroke-width':'1',
+      'stroke-dasharray': (i === 0 || i === 4) ? '0' : '2,4',
+    }));
+    const lbl = svgEl('text', {
+      x: padL - 6, y: y + 4,
+      fill:'#8aa0b8', 'font-size':'11', 'text-anchor':'end',
+    });
+    lbl.textContent = (100 - i * 25) + '%';
+    svg.appendChild(lbl);
   }
-  if(pts.length<2){
-    const t = document.createElementNS('http://www.w3.org/2000/svg','text');
-    t.setAttribute('x',W/2); t.setAttribute('y',H/2);
-    t.setAttribute('fill','#8aa0b8'); t.setAttribute('text-anchor','middle');
-    t.setAttribute('font-size','13'); t.textContent = 'Waiting for sensor data…';
+
+  if(pts.length < 2){
+    const t = svgEl('text', {
+      x: W/2, y: H/2,
+      fill:'#8aa0b8', 'text-anchor':'middle', 'font-size':'13',
+    });
+    t.textContent = "Sensor ma'lumotlari kutilmoqda…";
     svg.appendChild(t);
     return;
   }
-  const series = [
-    {key:'soil1', color:'#3ad29f'},
-    {key:'soil2', color:'#5ac8fa'},
-    {key:'tank1', color:'#fdba74'},
-    {key:'tank2', color:'#c084fc'},
-  ];
+
   const n = pts.length;
-  series.forEach(s=>{
-    let path = '';
-    pts.forEach((p,i)=>{
-      const v = p[s.key];
-      if(v==null || isNaN(v)) return;
-      const x = pad + (i/(n-1))*(W-2*pad);
-      const y = pad + (1 - (Math.max(0,Math.min(100,v))/100))*(H-2*pad);
-      path += (path ? ' L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+  const tsFirst = pts[0].ts || 0;
+  const tsLast  = pts[n-1].ts || tsFirst + 1;
+  const span = Math.max(1, tsLast - tsFirst);
+  const nowSec = Date.now() / 1000;
+
+  // X-axis time tick labels — 5 evenly spaced ticks ending at "hozir".
+  const xTicks = 5;
+  for(let i = 0; i <= xTicks; i++){
+    const frac = i / xTicks;
+    const x = padL + frac * innerW;
+    const ts = tsFirst + frac * span;
+    const ageSec = nowSec - ts;
+    const label = (i === xTicks) ? 'hozir' : fmtAgeShort(ageSec);
+    const lbl = svgEl('text', {
+      x: x, y: H - 10,
+      fill:'#8aa0b8', 'font-size':'10', 'text-anchor':'middle',
     });
-    if(path){
-      const el = document.createElementNS('http://www.w3.org/2000/svg','path');
-      el.setAttribute('d', path);
-      el.setAttribute('stroke', s.color);
-      el.setAttribute('stroke-width','2');
-      el.setAttribute('fill','none');
-      el.setAttribute('stroke-linejoin','round');
-      el.setAttribute('stroke-linecap','round');
-      svg.appendChild(el);
+    lbl.textContent = label;
+    svg.appendChild(lbl);
+    // subtle vertical guide
+    if(i > 0 && i < xTicks){
+      svg.appendChild(svgEl('line', {
+        x1: x, x2: x, y1: padT, y2: H - padB,
+        stroke:'#1d2a44', 'stroke-width':'1', 'stroke-dasharray':'2,4',
+      }));
     }
+  }
+
+  // Plot each series — fill (area) first so the line sits on top.
+  series.forEach(s => {
+    const points = [];
+    pts.forEach((p, i) => {
+      const v = p[s.key];
+      if(v == null || isNaN(v)) return;
+      const x = padL + (i / (n - 1)) * innerW;
+      const y = padT + (1 - Math.max(0, Math.min(100, v)) / 100) * innerH;
+      points.push([x, y]);
+    });
+    if(points.length < 2) return;
+
+    const linePath = smoothPath(points);
+
+    // Gradient area fill.
+    const baseY = padT + innerH;
+    const fillD = linePath
+      + ` L${points[points.length-1][0].toFixed(1)},${baseY}`
+      + ` L${points[0][0].toFixed(1)},${baseY} Z`;
+    svg.appendChild(svgEl('path', {
+      d: fillD, fill: 'url(#g-' + s.key + ')', stroke: 'none',
+    }));
+
+    // Line.
+    svg.appendChild(svgEl('path', {
+      d: linePath, stroke: s.color, 'stroke-width':'2',
+      fill:'none', 'stroke-linejoin':'round', 'stroke-linecap':'round',
+    }));
   });
 }
 
@@ -912,7 +1129,7 @@ document.querySelectorAll('.btn[data-pump]').forEach(b=>{
     // Show loading state
     const stateEl = $('p'+pump+'-state');
     const prevText = stateEl.textContent;
-    stateEl.textContent = mode==='on' ? 'YOQILMOQDA...' : mode==='off' ? 'O`CHIRILMOQDA...' : 'KUTILMOQDA...';
+    stateEl.textContent = mode==='on' ? 'YOQILMOQDA...' : mode==='off' ? "O'CHIRILMOQDA..." : 'KUTILMOQDA...';
     stateEl.className = 'pump-state pending';
 
     try{
@@ -937,13 +1154,14 @@ document.querySelectorAll('.btn[data-pump]').forEach(b=>{
           break;
         }
       }
+      const modeUz = mode==='on' ? 'yoqildi' : mode==='off' ? "o'chirildi" : 'avto rejimga';
       if(confirmed){
-        showToast('Pump '+pump+' → '+mode+' ✅', 'ok');
+        showToast('Nasos '+pump+' → '+modeUz+' ✅', 'ok');
       } else {
-        showToast('Pump '+pump+': buyruq yuborildi, ESP32 javob kutilmoqda', 'warn');
+        showToast('Nasos '+pump+': buyruq yuborildi, qurilmadan javob kutilmoqda', 'warn');
       }
     }catch(e){
-      showToast('Override failed: '+e.message, 'err');
+      showToast('Buyruq yuborilmadi: '+e.message, 'err');
       stateEl.textContent = prevText;
     }finally{
       pendingPumps[pump] = false;
@@ -968,10 +1186,10 @@ async function saveSettings(){
       body:JSON.stringify(body),
     });
     const d = await r.json();
-    if(!r.ok) throw new Error(d.detail || 'save failed');
+    if(!r.ok) throw new Error(d.detail || 'saqlashda xato');
     lastSettings = d.settings;
-    showToast('Settings saved', 'ok');
-  }catch(e){ showToast('Save failed: '+e.message, 'err'); }
+    showToast('Sozlamalar saqlandi', 'ok');
+  }catch(e){ showToast('Saqlash xato: '+e.message, 'err'); }
 }
 
 // ---------- chat ----------
@@ -996,9 +1214,13 @@ async function sendMsg(){
       body:JSON.stringify({message:m}),
     });
     const d = await r.json();
-    loading.textContent = d.reply || 'Bo‘sh javob';
+    loading.textContent = d.reply || "Bo'sh javob";
+    // If a pump override was applied via chat, refresh status immediately.
+    if(d.action === 'override'){
+      poll();
+    }
   }catch(e){
-    loading.textContent = "Server bilan aloqa yuq";
+    loading.textContent = "Server bilan aloqa yo'q";
   }finally{
     $('send-btn').disabled = false;
     inp.focus();
