@@ -650,12 +650,32 @@ header{
   align-items:center;
   border-bottom:1px solid var(--line);
   position:sticky;top:0;z-index:10;
+  gap:10px;
+  flex-wrap:wrap;
 }
 header h1{margin:0;font-size:18px;font-weight:600}
+.header-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.lang-switch{display:flex;gap:4px}
+.lang-btn{
+  background:var(--card2);border:1px solid var(--line);color:var(--muted);
+  padding:4px 9px;border-radius:6px;font-size:11px;font-weight:700;
+  cursor:pointer;letter-spacing:.5px;transition:all .15s;
+}
+.lang-btn:hover{color:var(--txt);border-color:var(--accent)}
+.lang-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 header .pill{
   font-size:12px;padding:5px 10px;border-radius:999px;
   background:var(--card2);border:1px solid var(--line);
 }
+.refresh-btn{
+  background:var(--card);border:1px solid var(--line);color:var(--muted);
+  width:24px;height:24px;border-radius:6px;font-size:12px;
+  cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;
+  transition:color .15s, border-color .15s;
+}
+.refresh-btn:hover{color:var(--txt);border-color:var(--accent)}
+.refresh-btn.spin{animation:rspin .6s linear}
+@keyframes rspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 main{padding:18px;max-width:1200px;margin:0 auto;display:grid;gap:18px}
 section{background:var(--card);border-radius:14px;padding:16px;border:1px solid var(--line)}
 section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
@@ -701,9 +721,16 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
 .statusbar .item{display:flex;align-items:center;gap:6px}
 #chart-wrap{position:relative;width:100%;height:300px}
 #chart{width:100%;height:100%;display:block}
-.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:8px;font-size:12px;color:var(--muted)}
-.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;font-size:12px;color:var(--muted)}
+.legend .lg-item{
+  display:inline-flex;align-items:center;gap:6px;
+  cursor:pointer;user-select:none;padding:3px 8px;border-radius:6px;
+  transition:opacity .15s, color .15s, background .15s;
+}
+.legend .lg-item:hover{color:var(--txt);background:rgba(255,255,255,.05)}
+.legend .lg-item.hidden{opacity:.4;text-decoration:line-through}
 .legend i{width:14px;height:3px;border-radius:2px;display:inline-block}
+.last-updated{font-size:11px;color:var(--muted);margin-top:8px;text-align:right;font-style:italic}
 .chat{display:flex;flex-direction:column;gap:10px}
 #msgs{
   max-height:340px;min-height:140px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;
@@ -731,6 +758,8 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   background:var(--bg);color:var(--txt);font-size:14px;
 }
 .settings-actions{display:flex;justify-content:flex-end;margin-top:12px;gap:8px}
+.btn-save{flex:0 0 auto;padding:9px 18px;min-width:140px;transition:background .25s, color .25s, border-color .25s}
+.btn-save.saved{background:var(--ok);border-color:var(--ok);color:#0b1220}
 .toast{
   position:fixed;bottom:18px;right:18px;background:var(--card2);
   border:1px solid var(--line);padding:10px 14px;border-radius:10px;
@@ -750,96 +779,98 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
 <body>
 <header>
   <h1>🌱 Smart Irrigation AI</h1>
-  <span id="conn" class="pill"><span class="dot"></span><span id="conn-text">ulanmoqda…</span></span>
+  <div class="header-right">
+    <div class="lang-switch">
+      <button type="button" class="lang-btn" data-lang="uz" onclick="setLang('uz')">UZ</button>
+      <button type="button" class="lang-btn" data-lang="ru" onclick="setLang('ru')">RU</button>
+      <button type="button" class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
+    </div>
+    <span id="conn" class="pill"><span class="dot"></span><span id="conn-text">…</span></span>
+  </div>
 </header>
 
 <main>
   <div class="statusbar">
-    <div class="item"><strong>Qurilma:</strong> <span id="device-state" class="muted">noma'lum</span></div>
-    <div class="item"><strong>Oxirgi aloqa:</strong> <span id="last-seen" class="muted">—</span></div>
-    <div class="item"><strong>AI:</strong> <span id="ai-state" class="muted">—</span></div>
-    <div class="item"><strong>Qaror:</strong> <span id="decision-source" class="muted">—</span></div>
+    <div class="item"><strong data-i18n="device">Qurilma:</strong> <span id="device-state" class="muted">—</span></div>
+    <div class="item"><strong data-i18n="last_seen">Oxirgi aloqa:</strong> <span id="last-seen" class="muted">—</span> <button id="refresh-btn" type="button" class="refresh-btn" onclick="forceRefresh()" title="Refresh">🔄</button></div>
+    <div class="item"><strong data-i18n="ai_label">AI:</strong> <span id="ai-state" class="muted">—</span></div>
+    <div class="item"><strong data-i18n="decision_label">Qaror:</strong> <span id="decision-source" class="muted">—</span></div>
   </div>
 
   <section>
-    <h2>Sensorlar</h2>
+    <h2 data-i18n="sensors_title">Sensorlar</h2>
     <div class="row cards">
-      <div class="card"><div class="label">Soil 1 (Zona 1)</div><div class="val"><span id="s1">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s1" style="width:0"></div></div></div>
-      <div class="card"><div class="label">Soil 2 (Zona 2)</div><div class="val"><span id="s2">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s2" style="width:0"></div></div></div>
+      <div class="card"><div class="label">Soil 1 (<span data-i18n="zone1">Zona 1</span>)</div><div class="val"><span id="s1">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s1" style="width:0"></div></div></div>
+      <div class="card"><div class="label">Soil 2 (<span data-i18n="zone2">Zona 2</span>)</div><div class="val"><span id="s2">--</span><span class="unit">%</span></div><div class="bar"><div id="b-s2" style="width:0"></div></div></div>
       <div class="card"><div class="label">Tank 1</div><div class="val"><span id="t1">--</span><span class="unit">%</span></div><div class="bar"><div id="b-t1" style="width:0"></div></div></div>
       <div class="card"><div class="label">Tank 2</div><div class="val"><span id="t2">--</span><span class="unit">%</span></div><div class="bar"><div id="b-t2" style="width:0"></div></div></div>
-      <div class="card"><div class="label">Harorat</div><div class="val"><span id="temp">--</span><span class="unit">°C</span></div><div class="bar"><div id="b-temp" style="width:0"></div></div></div>
-      <div class="card"><div class="label">Havo namligi</div><div class="val"><span id="hum">--</span><span class="unit">%</span></div><div class="bar"><div id="b-hum" style="width:0"></div></div></div>
+      <div class="card"><div class="label" data-i18n="temperature">Harorat</div><div class="val"><span id="temp">--</span><span class="unit">°C</span></div><div class="bar"><div id="b-temp" style="width:0"></div></div></div>
+      <div class="card"><div class="label" data-i18n="air_humidity">Havo namligi</div><div class="val"><span id="hum">--</span><span class="unit">%</span></div><div class="bar"><div id="b-hum" style="width:0"></div></div></div>
     </div>
   </section>
 
   <section>
-    <h2>Nasoslar</h2>
+    <h2 data-i18n="pumps_title">Nasoslar</h2>
     <div class="row pumps">
       <div class="pump">
         <div class="pump-head">
-          <div><div class="label muted" style="font-size:12px">Nasos 1 (Zona 1)</div><div id="p1-state" class="pump-state off">OFF</div></div>
-          <div class="muted" style="font-size:12px;text-align:right" id="p1-mode">avto</div>
+          <div><div class="label muted" style="font-size:12px"><span data-i18n="pump1_name">Nasos 1</span> (<span data-i18n="zone1">Zona 1</span>)</div><div id="p1-state" class="pump-state off">OFF</div></div>
+          <div class="muted" style="font-size:12px;text-align:right" id="p1-mode">—</div>
         </div>
         <div class="pump-meta" id="p1-reason">—</div>
         <div class="btns">
-          <button class="btn" data-pump="1" data-mode="auto">Avto</button>
-          <button class="btn on" data-pump="1" data-mode="on">Yoqish</button>
-          <button class="btn off" data-pump="1" data-mode="off">O'chirish</button>
+          <button type="button" class="btn" data-pump="1" data-mode="auto" data-i18n="btn_auto">Avto</button>
+          <button type="button" class="btn on" data-pump="1" data-mode="on" data-i18n="btn_on">Yoqish</button>
+          <button type="button" class="btn off" data-pump="1" data-mode="off" data-i18n="btn_off">O'chirish</button>
         </div>
       </div>
       <div class="pump">
         <div class="pump-head">
-          <div><div class="label muted" style="font-size:12px">Nasos 2 (Zona 2)</div><div id="p2-state" class="pump-state off">OFF</div></div>
-          <div class="muted" style="font-size:12px;text-align:right" id="p2-mode">avto</div>
+          <div><div class="label muted" style="font-size:12px"><span data-i18n="pump2_name">Nasos 2</span> (<span data-i18n="zone2">Zona 2</span>)</div><div id="p2-state" class="pump-state off">OFF</div></div>
+          <div class="muted" style="font-size:12px;text-align:right" id="p2-mode">—</div>
         </div>
         <div class="pump-meta" id="p2-reason">—</div>
         <div class="btns">
-          <button class="btn" data-pump="2" data-mode="auto">Avto</button>
-          <button class="btn on" data-pump="2" data-mode="on">Yoqish</button>
-          <button class="btn off" data-pump="2" data-mode="off">O'chirish</button>
+          <button type="button" class="btn" data-pump="2" data-mode="auto" data-i18n="btn_auto">Avto</button>
+          <button type="button" class="btn on" data-pump="2" data-mode="on" data-i18n="btn_on">Yoqish</button>
+          <button type="button" class="btn off" data-pump="2" data-mode="off" data-i18n="btn_off">O'chirish</button>
         </div>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>Tarix (oxirgi 100 yozuv)</h2>
+    <h2 data-i18n="history_title">Tarix (oxirgi 100 yozuv)</h2>
     <div id="chart-wrap">
       <svg id="chart" viewBox="0 0 800 300" preserveAspectRatio="none"></svg>
     </div>
-    <div class="legend">
-      <span><i style="background:#3ad29f"></i> Soil 1</span>
-      <span><i style="background:#5ac8fa"></i> Soil 2</span>
-      <span><i style="background:#fdba74"></i> Tank 1</span>
-      <span><i style="background:#c084fc"></i> Tank 2</span>
-      <span class="muted" id="hist-count">0 nuqta</span>
-    </div>
+    <div class="legend" id="legend"></div>
+    <div class="last-updated"><span data-i18n="last_updated_label">Oxirgi yangilanish:</span> <span id="last-updated-ts">—</span></div>
   </section>
 
   <section>
-    <h2>🤖 AI Yordamchi</h2>
+    <h2 data-i18n="ai_assistant_title">🤖 AI Yordamchi</h2>
     <div class="chat">
       <div id="msgs">
-        <div class="msg sys">Salom! Sug'orish bo'yicha savol bering yoki nasoslarni boshqaring. Masalan: «1-nasosni yoq», «2-nasosni o'chir» yoki «Bugun pomidorni sug'orsam bo'ladimi?»</div>
+        <div class="msg sys" id="chat-greeting" data-i18n="chat_greeting">Salom! Sug'orish bo'yicha savol bering yoki nasoslarni boshqaring. Masalan: «1-nasosni yoq», «2-nasosni o'chir» yoki «Bugun pomidorni sug'orsam bo'ladimi?»</div>
       </div>
       <div class="chat-input">
         <input id="inp" placeholder="Savol bering yoki buyruq yozing…" autocomplete="off" onkeydown="if(event.key==='Enter')sendMsg()">
-        <button id="send-btn" onclick="sendMsg()">→</button>
+        <button id="send-btn" type="button" onclick="sendMsg()">→</button>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>⚙️ Sozlamalar (chegaralar)</h2>
+    <h2 data-i18n="settings_title">⚙️ Sozlamalar (chegaralar)</h2>
     <div class="settings-grid">
-      <div class="field"><label>Tuproq quyi chegarasi</label><input type="number" id="set-soil-low" min="0" max="100"></div>
-      <div class="field"><label>Tuproq yuqori chegarasi</label><input type="number" id="set-soil-high" min="0" max="100"></div>
-      <div class="field"><label>Tank minimal</label><input type="number" id="set-tank-min" min="0" max="100"></div>
-      <div class="field"><label>Nasos max vaqti (min)</label><input type="number" id="set-max-min" min="1" max="240"></div>
+      <div class="field"><label data-i18n="soil_low_label">Tuproq quyi chegarasi</label><input type="number" id="set-soil-low" min="0" max="100"></div>
+      <div class="field"><label data-i18n="soil_high_label">Tuproq yuqori chegarasi</label><input type="number" id="set-soil-high" min="0" max="100"></div>
+      <div class="field"><label data-i18n="tank_min_label">Tank minimal</label><input type="number" id="set-tank-min" min="0" max="100"></div>
+      <div class="field"><label data-i18n="max_min_label">Nasos max vaqti (min)</label><input type="number" id="set-max-min" min="1" max="240"></div>
     </div>
     <div class="settings-actions">
-      <button class="btn" style="flex:0 0 auto;padding:9px 18px" onclick="saveSettings()">Saqlash</button>
+      <button id="save-btn" type="button" class="btn btn-save" onclick="saveSettings()" data-i18n="save">Saqlash</button>
     </div>
   </section>
 </main>
@@ -847,36 +878,292 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
 <div id="toast" class="toast"></div>
 
 <script>
-const $ = id => document.getElementById(id);
-let lastSettings = null;
+// ---------- i18n ----------
+const T = {
+  uz: {
+    conn_connecting: 'ulanmoqda…',
+    conn_online: 'ulangan',
+    conn_offline: 'uzilgan',
+    conn_error: 'server xatosi',
+    device: 'Qurilma:',
+    last_seen: 'Oxirgi aloqa:',
+    ai_label: 'AI:',
+    decision_label: 'Qaror:',
+    unknown: "noma'lum",
+    ai_on: 'yoniq',
+    ai_off: "o'chiq",
+    src_ai: 'AI',
+    src_rules: 'lokal qoidalar',
+    sensors_title: 'Sensorlar',
+    pumps_title: 'Nasoslar',
+    history_title: 'Tarix (oxirgi 100 yozuv)',
+    ai_assistant_title: '🤖 AI Yordamchi',
+    settings_title: '⚙️ Sozlamalar (chegaralar)',
+    zone1: 'Zona 1',
+    zone2: 'Zona 2',
+    pump1_name: 'Nasos 1',
+    pump2_name: 'Nasos 2',
+    temperature: 'Harorat',
+    air_humidity: 'Havo namligi',
+    btn_auto: 'Avto',
+    btn_on: 'Yoqish',
+    btn_off: "O'chirish",
+    state_on: 'ON',
+    state_off: 'OFF',
+    state_turning_on: 'YOQILMOQDA...',
+    state_turning_off: "O'CHIRILMOQDA...",
+    state_waiting: 'KUTILMOQDA...',
+    mode_prefix: 'rejim:',
+    mode_auto: 'avto',
+    mode_on: 'yoqish',
+    mode_off: "o'chirish",
+    soil_low_label: 'Tuproq quyi chegarasi',
+    soil_high_label: 'Tuproq yuqori chegarasi',
+    tank_min_label: 'Tank minimal',
+    max_min_label: 'Nasos max vaqti (min)',
+    save: 'Saqlash',
+    saved: '✅ Saqlandi',
+    save_error: 'Saqlash xato:',
+    settings_saved_toast: 'Sozlamalar saqlandi',
+    refresh_title: 'Yangilash',
+    points: 'nuqta',
+    waiting_data: "Sensor ma'lumotlari kutilmoqda…",
+    now: 'hozir',
+    never: 'hech qachon',
+    age_seconds_ago: '{n} soniya oldin',
+    age_minutes_ago: '{n} daqiqa oldin',
+    age_hours_ago: '{n} soat oldin',
+    last_updated_label: 'Oxirgi yangilanish:',
+    chat_greeting: "Salom! Sug'orish bo'yicha savol bering yoki nasoslarni boshqaring. Masalan: «1-nasosni yoq», «2-nasosni o'chir» yoki «Bugun pomidorni sug'orsam bo'ladimi?»",
+    chat_placeholder: 'Savol bering yoki buyruq yozing…',
+    chat_empty: "Bo'sh javob",
+    chat_no_server: "Server bilan aloqa yo'q",
+    pump_action_on: 'yoqildi',
+    pump_action_off: "o'chirildi",
+    pump_action_auto: 'avto rejimga',
+    pump_cmd_pending: 'buyruq yuborildi, qurilmadan javob kutilmoqda',
+    pump_cmd_failed: 'Buyruq yuborilmadi:',
+    reason_no_data: "ma'lumot yo'q",
+    reason_local_rules: 'lokal qoidalar',
+    reason_override: "qo'lda",
+    reason_safety: 'xavfsizlik',
+    reason_ai_decision: 'AI qarori',
+  },
+  ru: {
+    conn_connecting: 'подключение…',
+    conn_online: 'подключено',
+    conn_offline: 'отключено',
+    conn_error: 'ошибка сервера',
+    device: 'Устройство:',
+    last_seen: 'Последняя связь:',
+    ai_label: 'AI:',
+    decision_label: 'Решение:',
+    unknown: 'неизвестно',
+    ai_on: 'включён',
+    ai_off: 'выключен',
+    src_ai: 'AI',
+    src_rules: 'локальные правила',
+    sensors_title: 'Датчики',
+    pumps_title: 'Насосы',
+    history_title: 'История (последние 100 записей)',
+    ai_assistant_title: '🤖 AI Помощник',
+    settings_title: '⚙️ Настройки (пороги)',
+    zone1: 'Зона 1',
+    zone2: 'Зона 2',
+    pump1_name: 'Насос 1',
+    pump2_name: 'Насос 2',
+    temperature: 'Температура',
+    air_humidity: 'Влажность воздуха',
+    btn_auto: 'Авто',
+    btn_on: 'Включить',
+    btn_off: 'Выключить',
+    state_on: 'ВКЛ',
+    state_off: 'ВЫКЛ',
+    state_turning_on: 'ВКЛЮЧЕНИЕ...',
+    state_turning_off: 'ВЫКЛЮЧЕНИЕ...',
+    state_waiting: 'ОЖИДАНИЕ...',
+    mode_prefix: 'режим:',
+    mode_auto: 'авто',
+    mode_on: 'вкл',
+    mode_off: 'выкл',
+    soil_low_label: 'Нижний порог почвы',
+    soil_high_label: 'Верхний порог почвы',
+    tank_min_label: 'Минимум бака',
+    max_min_label: 'Макс. время насоса (мин)',
+    save: 'Сохранить',
+    saved: '✅ Сохранено',
+    save_error: 'Ошибка сохранения:',
+    settings_saved_toast: 'Настройки сохранены',
+    refresh_title: 'Обновить',
+    points: 'точек',
+    waiting_data: 'Ожидание данных датчиков…',
+    now: 'сейчас',
+    never: 'никогда',
+    age_seconds_ago: '{n} с назад',
+    age_minutes_ago: '{n} мин назад',
+    age_hours_ago: '{n} ч назад',
+    last_updated_label: 'Последнее обновление:',
+    chat_greeting: 'Привет! Задайте вопрос об орошении или управляйте насосами. Например: «включи насос 1», «выключи насос 2» или «можно ли сегодня поливать помидоры?»',
+    chat_placeholder: 'Задайте вопрос или введите команду…',
+    chat_empty: 'Пустой ответ',
+    chat_no_server: 'Нет связи с сервером',
+    pump_action_on: 'включён',
+    pump_action_off: 'выключен',
+    pump_action_auto: 'в авто режим',
+    pump_cmd_pending: 'команда отправлена, ожидаем ответ устройства',
+    pump_cmd_failed: 'Команда не отправлена:',
+    reason_no_data: 'нет данных',
+    reason_local_rules: 'локальные правила',
+    reason_override: 'ручной',
+    reason_safety: 'безопасность',
+    reason_ai_decision: 'решение AI',
+  },
+  en: {
+    conn_connecting: 'connecting…',
+    conn_online: 'online',
+    conn_offline: 'offline',
+    conn_error: 'server error',
+    device: 'Device:',
+    last_seen: 'Last seen:',
+    ai_label: 'AI:',
+    decision_label: 'Decision:',
+    unknown: 'unknown',
+    ai_on: 'on',
+    ai_off: 'off',
+    src_ai: 'AI',
+    src_rules: 'local rules',
+    sensors_title: 'Sensors',
+    pumps_title: 'Pumps',
+    history_title: 'History (last 100 records)',
+    ai_assistant_title: '🤖 AI Assistant',
+    settings_title: '⚙️ Settings (thresholds)',
+    zone1: 'Zone 1',
+    zone2: 'Zone 2',
+    pump1_name: 'Pump 1',
+    pump2_name: 'Pump 2',
+    temperature: 'Temperature',
+    air_humidity: 'Air humidity',
+    btn_auto: 'Auto',
+    btn_on: 'Turn on',
+    btn_off: 'Turn off',
+    state_on: 'ON',
+    state_off: 'OFF',
+    state_turning_on: 'TURNING ON...',
+    state_turning_off: 'TURNING OFF...',
+    state_waiting: 'WAITING...',
+    mode_prefix: 'mode:',
+    mode_auto: 'auto',
+    mode_on: 'on',
+    mode_off: 'off',
+    soil_low_label: 'Soil low threshold',
+    soil_high_label: 'Soil high threshold',
+    tank_min_label: 'Tank minimum',
+    max_min_label: 'Max pump time (min)',
+    save: 'Save',
+    saved: '✅ Saved',
+    save_error: 'Save error:',
+    settings_saved_toast: 'Settings saved',
+    refresh_title: 'Refresh',
+    points: 'points',
+    waiting_data: 'Waiting for sensor data…',
+    now: 'now',
+    never: 'never',
+    age_seconds_ago: '{n}s ago',
+    age_minutes_ago: '{n}m ago',
+    age_hours_ago: '{n}h ago',
+    last_updated_label: 'Last updated:',
+    chat_greeting: 'Hi! Ask any irrigation question or control the pumps. For example: "turn on pump 1", "turn off pump 2", or "should I water the tomatoes today?"',
+    chat_placeholder: 'Ask a question or type a command…',
+    chat_empty: 'Empty response',
+    chat_no_server: 'No server connection',
+    pump_action_on: 'turned on',
+    pump_action_off: 'turned off',
+    pump_action_auto: 'set to auto',
+    pump_cmd_pending: 'command sent, waiting for device confirmation',
+    pump_cmd_failed: 'Command failed:',
+    reason_no_data: 'no data yet',
+    reason_local_rules: 'local rules',
+    reason_override: 'override',
+    reason_safety: 'safety',
+    reason_ai_decision: 'AI decision',
+  },
+};
+
+let lang = (function(){
+  try {
+    const saved = localStorage.getItem('lang');
+    if (saved && T[saved]) return saved;
+  } catch(e){}
+  return 'uz';
+})();
+
+function tr(key){
+  return (T[lang] && T[lang][key]) || T.uz[key] || key;
+}
+function trf(key, vars){
+  let s = tr(key);
+  if (vars) for (const k in vars) s = s.split('{'+k+'}').join(vars[k]);
+  return s;
+}
+
+function setLang(newLang){
+  if (!T[newLang]) return;
+  lang = newLang;
+  try { localStorage.setItem('lang', lang); } catch(e){}
+  applyLang();
+}
+
+function applyLang(){
+  document.documentElement.lang = lang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    el.textContent = tr(el.dataset.i18n);
+  });
+  document.querySelectorAll('.lang-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.lang === lang);
+  });
+  const inp = document.getElementById('inp');
+  if (inp) inp.placeholder = tr('chat_placeholder');
+  const refresh = document.getElementById('refresh-btn');
+  if (refresh) refresh.title = tr('refresh_title');
+  applyDynamicLabels();
+  renderLegend();
+  if (lastChartPts) drawChart(lastChartPts);
+  updateLastUpdated();
+}
 
 // ---------- helpers ----------
+const $ = id => document.getElementById(id);
+let lastSettings = null;
+let lastStatus = null;
+let lastChartPts = null;
+let lastChartUpdate = 0;
+
 function fmtAge(sec){
-  if(sec==null) return 'hech qachon';
-  if(sec<60) return Math.round(sec)+' soniya oldin';
-  if(sec<3600) return Math.round(sec/60)+' daqiqa oldin';
-  return Math.round(sec/3600)+' soat oldin';
+  if (sec == null) return tr('never');
+  if (sec < 60) return trf('age_seconds_ago', {n: Math.round(sec)});
+  if (sec < 3600) return trf('age_minutes_ago', {n: Math.round(sec/60)});
+  return trf('age_hours_ago', {n: Math.round(sec/3600)});
 }
 function fmtAgeShort(sec){
-  if(sec==null || sec<30) return 'hozir';
-  if(sec<60) return Math.round(sec)+'s';
-  if(sec<3600) return Math.round(sec/60)+'m';
+  if (sec == null || sec < 30) return tr('now');
+  if (sec < 60) return Math.round(sec)+'s';
+  if (sec < 3600) return Math.round(sec/60)+'m';
   return Math.round(sec/3600)+'h';
 }
-function setBar(id,pct,kind){
-  const el = $(id); if(!el) return;
+function setBar(id, pct, kind){
+  const el = $(id); if (!el) return;
   pct = Math.max(0, Math.min(100, pct||0));
-  el.style.width = pct+'%';
+  el.style.width = pct + '%';
   let color = 'var(--ok)';
-  if(kind==='soil'){
-    if(pct < (lastSettings?.soil_low ?? 35)) color = 'var(--err)';
-    else if(pct > (lastSettings?.soil_high ?? 60)) color = 'var(--warn)';
-  } else if(kind==='tank'){
-    if(pct < (lastSettings?.tank_min ?? 20)) color = 'var(--err)';
-    else if(pct < 40) color = 'var(--warn)';
-  } else if(kind==='temp'){
+  if (kind === 'soil'){
+    if (pct < (lastSettings?.soil_low ?? 35)) color = 'var(--err)';
+    else if (pct > (lastSettings?.soil_high ?? 60)) color = 'var(--warn)';
+  } else if (kind === 'tank'){
+    if (pct < (lastSettings?.tank_min ?? 20)) color = 'var(--err)';
+    else if (pct < 40) color = 'var(--warn)';
+  } else if (kind === 'temp'){
     color = (pct<10||pct>35) ? 'var(--err)' : (pct<15||pct>30) ? 'var(--warn)' : 'var(--ok)';
-  } else if(kind==='hum'){
+  } else if (kind === 'hum'){
     color = (pct<25||pct>85) ? 'var(--warn)' : 'var(--ok)';
   }
   el.style.background = color;
@@ -889,30 +1176,115 @@ function showToast(msg, kind){
   showToast._t = setTimeout(()=>{ t.className='toast'; }, 2500);
 }
 
+// Translate static parts of the pump reason string. Free-form AI text and
+// numeric inequalities pass through unchanged.
+function translatePumpReason(reason){
+  if (!reason) return '—';
+  let out = reason;
+  out = out.replace(/no data yet/gi, tr('reason_no_data'));
+  out = out.replace(/local rules:/gi, tr('reason_local_rules') + ':');
+  out = out.replace(/override:pump1=on/gi, tr('reason_override') + ':' + tr('pump1_name') + '=' + tr('mode_on'));
+  out = out.replace(/override:pump1=off/gi, tr('reason_override') + ':' + tr('pump1_name') + '=' + tr('mode_off'));
+  out = out.replace(/override:pump2=on/gi, tr('reason_override') + ':' + tr('pump2_name') + '=' + tr('mode_on'));
+  out = out.replace(/override:pump2=off/gi, tr('reason_override') + ':' + tr('pump2_name') + '=' + tr('mode_off'));
+  out = out.replace(/safety:pump1 off/gi, tr('reason_safety') + ':' + tr('pump1_name') + ' ' + tr('mode_off'));
+  out = out.replace(/safety:pump2 off/gi, tr('reason_safety') + ':' + tr('pump2_name') + ' ' + tr('mode_off'));
+  out = out.replace(/AI decision/gi, tr('reason_ai_decision'));
+  return out;
+}
+
+// Re-apply translations on dynamic spans (called on language switch + on poll).
+function applyDynamicLabels(){
+  if (!lastStatus) return;
+  const d = lastStatus;
+  const online = !!d.online;
+  $('conn-text').textContent = online ? tr('conn_online') : tr('conn_offline');
+  $('device-state').textContent = online ? tr('conn_online') : tr('conn_offline');
+  $('last-seen').textContent = fmtAge(d.age_seconds);
+  $('ai-state').textContent = d.ai_enabled ? tr('ai_on') : tr('ai_off');
+  const dec = d.decision || {};
+  const ovr = d.overrides || {'1':'auto','2':'auto'};
+  const srcMap = {ai: tr('src_ai'), rules: tr('src_rules'), init: '—'};
+  $('decision-source').textContent = srcMap[dec.source] || dec.source || '—';
+  ['1','2'].forEach(num => {
+    const on = !!dec['pump'+num];
+    const stateEl = $('p'+num+'-state');
+    if (!stateEl.classList.contains('pending')){
+      stateEl.textContent = on ? tr('state_on') : tr('state_off');
+    }
+    $('p'+num+'-reason').textContent = translatePumpReason(dec.reason);
+    const m = ovr[num] || 'auto';
+    const modeMap = {auto: tr('mode_auto'), on: tr('mode_on'), off: tr('mode_off')};
+    $('p'+num+'-mode').textContent = tr('mode_prefix') + ' ' + (modeMap[m] || m);
+  });
+}
+
+function updateLastUpdated(){
+  const el = $('last-updated-ts');
+  if (!el) return;
+  if (!lastChartUpdate){ el.textContent = '—'; return; }
+  const sec = (Date.now() / 1000) - lastChartUpdate;
+  el.textContent = fmtAge(sec);
+}
+
+// ---------- chart series + interactive legend ----------
+const SERIES = [
+  {key:'soil1', color:'#3ad29f', name:'Soil 1'},
+  {key:'soil2', color:'#5ac8fa', name:'Soil 2'},
+  {key:'tank1', color:'#fdba74', name:'Tank 1'},
+  {key:'tank2', color:'#c084fc', name:'Tank 2'},
+];
+const hiddenSeries = new Set();
+
+function renderLegend(){
+  const el = $('legend');
+  if (!el) return;
+  const count = lastChartPts ? lastChartPts.length : 0;
+  let html = '';
+  SERIES.forEach(s => {
+    const cls = 'lg-item' + (hiddenSeries.has(s.key) ? ' hidden' : '');
+    html += '<span class="' + cls + '" data-skey="' + s.key + '">'
+         +  '<i style="background:' + s.color + '"></i>' + s.name
+         +  '</span>';
+  });
+  html += '<span class="muted" id="hist-count">' + count + ' ' + tr('points') + '</span>';
+  el.innerHTML = html;
+  el.querySelectorAll('.lg-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const k = item.dataset.skey;
+      if (hiddenSeries.has(k)) hiddenSeries.delete(k);
+      else hiddenSeries.add(k);
+      if (lastChartPts) drawChart(lastChartPts);
+      renderLegend();
+    });
+  });
+}
+
 // ---------- status polling ----------
 async function poll(){
   try{
     const r = await fetch('/api/status');
-    if(!r.ok) throw new Error('http '+r.status);
+    if (!r.ok) throw new Error('http '+r.status);
     const d = await r.json();
+    lastStatus = d;
     lastSettings = d.settings || lastSettings;
 
     // header pill
     const online = !!d.online;
     $('conn').firstElementChild.className = 'dot ' + (online?'ok':'err');
-    $('conn-text').textContent = online ? 'ulangan' : 'uzilgan';
-    $('device-state').textContent = online ? 'ulangan' : 'uzilgan';
+    $('conn-text').textContent = online ? tr('conn_online') : tr('conn_offline');
+    $('device-state').textContent = online ? tr('conn_online') : tr('conn_offline');
     $('device-state').className = online ? 'ok' : 'err';
     $('last-seen').textContent = fmtAge(d.age_seconds);
-    $('ai-state').textContent = d.ai_enabled ? 'yoniq' : "o'chiq";
+    $('ai-state').textContent = d.ai_enabled ? tr('ai_on') : tr('ai_off');
     $('ai-state').className = d.ai_enabled ? 'ok' : 'warn';
 
     // sensor cards
     const s = d.data || {};
     const set = (id, v, decimals) => {
       const el = $(id);
-      if(v==null || v===undefined){ el.textContent='--'; return; }
-      el.textContent = (decimals!=null) ? Number(v).toFixed(decimals) : v;
+      if (v == null || v === undefined){ el.textContent = '--'; return; }
+      el.textContent = (decimals != null) ? Number(v).toFixed(decimals) : v;
     };
     set('s1', s.soil1); setBar('b-s1', s.soil1, 'soil');
     set('s2', s.soil2); setBar('b-s2', s.soil2, 'soil');
@@ -922,35 +1294,37 @@ async function poll(){
     set('hum', s.hum, 0); setBar('b-hum', s.hum, 'hum');
 
     // sensor-error coloring (override)
-    if(s.soil1_err){ $('s1').textContent='ERR'; $('s1').className='err'; } else $('s1').className='';
-    if(s.soil2_err){ $('s2').textContent='ERR'; $('s2').className='err'; } else $('s2').className='';
-    if(s.tank1_err){ $('t1').textContent='ERR'; $('t1').className='err'; } else $('t1').className='';
-    if(s.tank2_err){ $('t2').textContent='ERR'; $('t2').className='err'; } else $('t2').className='';
+    if (s.soil1_err){ $('s1').textContent='ERR'; $('s1').className='err'; } else $('s1').className='';
+    if (s.soil2_err){ $('s2').textContent='ERR'; $('s2').className='err'; } else $('s2').className='';
+    if (s.tank1_err){ $('t1').textContent='ERR'; $('t1').className='err'; } else $('t1').className='';
+    if (s.tank2_err){ $('t2').textContent='ERR'; $('t2').className='err'; } else $('t2').className='';
 
     // pumps
     const dec = d.decision || {};
     const ovr = d.overrides || {'1':'auto','2':'auto'};
-    const modeUz = m => m==='on' ? 'yoqish' : m==='off' ? "o'chirish" : 'avto';
     function paintPump(num){
       const on = !!dec['pump'+num];
       const el = $('p'+num+'-state');
-      el.textContent = on ? 'ON' : 'OFF';
-      el.className = 'pump-state ' + (on?'on':'off');
-      $('p'+num+'-reason').textContent = dec.reason || '—';
-      $('p'+num+'-mode').textContent = 'rejim: ' + modeUz(ovr[String(num)]||'auto');
-      // highlight active override button
-      document.querySelectorAll('.btn[data-pump="'+num+'"]').forEach(b=>{
-        b.classList.toggle('active', b.dataset.mode === (ovr[String(num)]||'auto'));
+      if (!el.classList.contains('pending')){
+        el.textContent = on ? tr('state_on') : tr('state_off');
+        el.className = 'pump-state ' + (on?'on':'off');
+      }
+      $('p'+num+'-reason').textContent = translatePumpReason(dec.reason);
+      const m = ovr[String(num)] || 'auto';
+      const modeMap = {auto: tr('mode_auto'), on: tr('mode_on'), off: tr('mode_off')};
+      $('p'+num+'-mode').textContent = tr('mode_prefix') + ' ' + (modeMap[m] || m);
+      document.querySelectorAll('.btn[data-pump="'+num+'"]').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === (ovr[String(num)] || 'auto'));
       });
     }
     paintPump(1); paintPump(2);
 
-    const srcUz = {ai:'AI', rules:'lokal qoidalar', init:'—'};
-    $('decision-source').textContent = srcUz[dec.source] || dec.source || '—';
+    const srcMap = {ai: tr('src_ai'), rules: tr('src_rules'), init: '—'};
+    $('decision-source').textContent = srcMap[dec.source] || dec.source || '—';
     $('decision-source').className = dec.source==='ai' ? 'ok' : (dec.source==='rules' ? 'warn' : 'muted');
 
     // settings (only fill if user is not currently editing)
-    if(lastSettings && document.activeElement.tagName !== 'INPUT'){
+    if (lastSettings && document.activeElement.tagName !== 'INPUT'){
       $('set-soil-low').value  = lastSettings.soil_low;
       $('set-soil-high').value = lastSettings.soil_high;
       $('set-tank-min').value  = lastSettings.tank_min;
@@ -958,7 +1332,7 @@ async function poll(){
     }
   } catch(e){
     $('conn').firstElementChild.className = 'dot err';
-    $('conn-text').textContent = 'server xatosi';
+    $('conn-text').textContent = tr('conn_error');
   }
 }
 
@@ -968,26 +1342,29 @@ async function refreshChart(){
     const r = await fetch('/api/history?limit=100');
     const d = await r.json();
     const pts = d.items || [];
-    $('hist-count').textContent = pts.length + ' nuqta';
+    lastChartPts = pts;
+    lastChartUpdate = Date.now() / 1000;
     drawChart(pts);
+    renderLegend();
+    updateLastUpdated();
   } catch(e){ /* ignore */ }
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 function svgEl(name, attrs){
   const el = document.createElementNS(SVG_NS, name);
-  if(attrs) for(const k in attrs) el.setAttribute(k, attrs[k]);
+  if (attrs) for (const k in attrs) el.setAttribute(k, attrs[k]);
   return el;
 }
 
 // Catmull-Rom-to-Bezier smoothing for visually pleasant lines.
 function smoothPath(pts){
-  if(pts.length < 2) return '';
-  if(pts.length === 2){
+  if (pts.length < 2) return '';
+  if (pts.length === 2){
     return `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)} L${pts[1][0].toFixed(1)},${pts[1][1].toFixed(1)}`;
   }
   let d = `M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
-  for(let i = 0; i < pts.length - 1; i++){
+  for (let i = 0; i < pts.length - 1; i++){
     const p0 = pts[i-1] || pts[i];
     const p1 = pts[i];
     const p2 = pts[i+1];
@@ -1008,32 +1385,25 @@ function drawChart(pts){
   const innerH = H - padT - padB;
   svg.innerHTML = '';
 
-  const series = [
-    {key:'soil1', color:'#3ad29f', name:'Soil 1'},
-    {key:'soil2', color:'#5ac8fa', name:'Soil 2'},
-    {key:'tank1', color:'#fdba74', name:'Tank 1'},
-    {key:'tank2', color:'#c084fc', name:'Tank 2'},
-  ];
-
-  // <defs> with one linear gradient per series for the area fills.
+  // <defs> with one linear gradient per series — subtle (max opacity 0.1).
   const defs = svgEl('defs');
-  series.forEach(s => {
+  SERIES.forEach(s => {
     const g = svgEl('linearGradient', {
       id: 'g-'+s.key, x1:'0', y1:'0', x2:'0', y2:'1',
     });
-    g.appendChild(svgEl('stop', {offset:'0%',   'stop-color': s.color, 'stop-opacity':'0.35'}));
+    g.appendChild(svgEl('stop', {offset:'0%',   'stop-color': s.color, 'stop-opacity':'0.1'}));
     g.appendChild(svgEl('stop', {offset:'100%', 'stop-color': s.color, 'stop-opacity':'0'}));
     defs.appendChild(g);
   });
   svg.appendChild(defs);
 
-  // Y-axis grid lines + labels (0/25/50/75/100%).
-  for(let i = 0; i <= 4; i++){
+  // Y-axis grid lines + labels (0/25/50/75/100%) — all dashed except the bottom axis.
+  for (let i = 0; i <= 4; i++){
     const y = padT + i * innerH / 4;
     svg.appendChild(svgEl('line', {
       x1: padL, x2: W - padR, y1: y, y2: y,
       stroke:'#1d2a44', 'stroke-width':'1',
-      'stroke-dasharray': (i === 0 || i === 4) ? '0' : '2,4',
+      'stroke-dasharray': (i === 4) ? '0' : '3,5',
     }));
     const lbl = svgEl('text', {
       x: padL - 6, y: y + 4,
@@ -1043,12 +1413,12 @@ function drawChart(pts){
     svg.appendChild(lbl);
   }
 
-  if(pts.length < 2){
+  if (!pts || pts.length < 2){
     const t = svgEl('text', {
       x: W/2, y: H/2,
       fill:'#8aa0b8', 'text-anchor':'middle', 'font-size':'13',
     });
-    t.textContent = "Sensor ma'lumotlari kutilmoqda…";
+    t.textContent = tr('waiting_data');
     svg.appendChild(t);
     return;
   }
@@ -1059,44 +1429,45 @@ function drawChart(pts){
   const span = Math.max(1, tsLast - tsFirst);
   const nowSec = Date.now() / 1000;
 
-  // X-axis time tick labels — 5 evenly spaced ticks ending at "hozir".
+  // X-axis time tick labels — 5 evenly spaced ticks ending at "now".
   const xTicks = 5;
-  for(let i = 0; i <= xTicks; i++){
+  for (let i = 0; i <= xTicks; i++){
     const frac = i / xTicks;
     const x = padL + frac * innerW;
     const ts = tsFirst + frac * span;
     const ageSec = nowSec - ts;
-    const label = (i === xTicks) ? 'hozir' : fmtAgeShort(ageSec);
+    const label = (i === xTicks) ? tr('now') : fmtAgeShort(ageSec);
     const lbl = svgEl('text', {
       x: x, y: H - 10,
       fill:'#8aa0b8', 'font-size':'10', 'text-anchor':'middle',
     });
     lbl.textContent = label;
     svg.appendChild(lbl);
-    // subtle vertical guide
-    if(i > 0 && i < xTicks){
+    if (i > 0 && i < xTicks){
       svg.appendChild(svgEl('line', {
         x1: x, x2: x, y1: padT, y2: H - padB,
-        stroke:'#1d2a44', 'stroke-width':'1', 'stroke-dasharray':'2,4',
+        stroke:'#1d2a44', 'stroke-width':'1', 'stroke-dasharray':'3,5',
       }));
     }
   }
 
   // Plot each series — fill (area) first so the line sits on top.
-  series.forEach(s => {
+  // Skip series that the user has toggled off in the legend.
+  SERIES.forEach(s => {
+    if (hiddenSeries.has(s.key)) return;
     const points = [];
     pts.forEach((p, i) => {
       const v = p[s.key];
-      if(v == null || isNaN(v)) return;
+      if (v == null || isNaN(v)) return;
       const x = padL + (i / (n - 1)) * innerW;
       const y = padT + (1 - Math.max(0, Math.min(100, v)) / 100) * innerH;
       points.push([x, y]);
     });
-    if(points.length < 2) return;
+    if (points.length < 2) return;
 
     const linePath = smoothPath(points);
 
-    // Gradient area fill.
+    // Subtle gradient area fill.
     const baseY = padT + innerH;
     const fillD = linePath
       + ` L${points[points.length-1][0].toFixed(1)},${baseY}`
@@ -1110,6 +1481,16 @@ function drawChart(pts){
       d: linePath, stroke: s.color, 'stroke-width':'2',
       fill:'none', 'stroke-linejoin':'round', 'stroke-linecap':'round',
     }));
+
+    // Dots at each data point — only when not too dense, to keep visuals clean.
+    if (points.length <= 60){
+      points.forEach(([x, y]) => {
+        svg.appendChild(svgEl('circle', {
+          cx: x.toFixed(1), cy: y.toFixed(1), r: '3',
+          fill: s.color, stroke: '#0b1220', 'stroke-width': '1',
+        }));
+      });
+    }
   });
 }
 
@@ -1117,57 +1498,64 @@ function drawChart(pts){
 // State-based flow: button pressed → disabled + loading → wait for ESP32 confirmation
 const pendingPumps = {1: false, 2: false};
 
-document.querySelectorAll('.btn[data-pump]').forEach(b=>{
-  b.addEventListener('click', async ()=>{
-    const pump = parseInt(b.dataset.pump,10);
+document.querySelectorAll('.btn[data-pump]').forEach(b => {
+  b.addEventListener('click', async () => {
+    const pump = parseInt(b.dataset.pump, 10);
     const mode = b.dataset.mode;
-    if(pendingPumps[pump]) return; // already waiting
+    if (pendingPumps[pump]) return; // already waiting
 
     // Disable all buttons for this pump
     pendingPumps[pump] = true;
     const pumpBtns = document.querySelectorAll(`.btn[data-pump="${pump}"]`);
-    pumpBtns.forEach(btn=>{ btn.disabled=true; btn.style.opacity='0.5'; });
+    pumpBtns.forEach(btn => { btn.disabled = true; btn.style.opacity = '0.5'; });
 
-    // Show loading state
+    // Show loading state (translated)
     const stateEl = $('p'+pump+'-state');
     const prevText = stateEl.textContent;
-    stateEl.textContent = mode==='on' ? 'YOQILMOQDA...' : mode==='off' ? "O'CHIRILMOQDA..." : 'KUTILMOQDA...';
+    const prevClass = stateEl.className;
+    stateEl.textContent = mode === 'on' ? tr('state_turning_on')
+                       : mode === 'off' ? tr('state_turning_off')
+                       : tr('state_waiting');
     stateEl.className = 'pump-state pending';
 
     try{
-      const r = await fetch('/api/override',{
-        method:'POST',
-        headers:{'content-type':'application/json'},
-        body:JSON.stringify({pump,mode}),
+      const r = await fetch('/api/override', {
+        method: 'POST',
+        headers: {'content-type': 'application/json'},
+        body: JSON.stringify({pump, mode}),
       });
-      if(!r.ok) throw new Error('http '+r.status);
+      if (!r.ok) throw new Error('http '+r.status);
 
       // Wait for ESP32 to confirm (poll until state changes, max 45s)
-      const wantOn = mode==='on';
-      const wantOff = mode==='off';
+      const wantOn = mode === 'on';
+      const wantOff = mode === 'off';
       let confirmed = false;
-      for(let i=0; i<15; i++){
-        await new Promise(ok=>setTimeout(ok,3000));
+      for (let i = 0; i < 15; i++){
+        await new Promise(ok => setTimeout(ok, 3000));
         const sr = await fetch('/api/status');
         const sd = await sr.json();
-        const actual = pump===1 ? sd.data.pump1 : sd.data.pump2;
-        if(mode==='auto' || (wantOn && actual) || (wantOff && !actual)){
+        const actual = pump === 1 ? sd.data.pump1 : sd.data.pump2;
+        if (mode === 'auto' || (wantOn && actual) || (wantOff && !actual)){
           confirmed = true;
           break;
         }
       }
-      const modeUz = mode==='on' ? 'yoqildi' : mode==='off' ? "o'chirildi" : 'avto rejimga';
-      if(confirmed){
-        showToast('Nasos '+pump+' → '+modeUz+' ✅', 'ok');
+      const action = mode === 'on' ? tr('pump_action_on')
+                  : mode === 'off' ? tr('pump_action_off')
+                  : tr('pump_action_auto');
+      const pumpName = pump === 1 ? tr('pump1_name') : tr('pump2_name');
+      if (confirmed){
+        showToast(pumpName + ' → ' + action + ' ✅', 'ok');
       } else {
-        showToast('Nasos '+pump+': buyruq yuborildi, qurilmadan javob kutilmoqda', 'warn');
+        showToast(pumpName + ': ' + tr('pump_cmd_pending'), 'warn');
       }
-    }catch(e){
-      showToast('Buyruq yuborilmadi: '+e.message, 'err');
+    } catch(e){
+      showToast(tr('pump_cmd_failed') + ' ' + e.message, 'err');
       stateEl.textContent = prevText;
-    }finally{
+      stateEl.className = prevClass;
+    } finally{
       pendingPumps[pump] = false;
-      pumpBtns.forEach(btn=>{ btn.disabled=false; btn.style.opacity='1'; });
+      pumpBtns.forEach(btn => { btn.disabled = false; btn.style.opacity = '1'; });
       poll();
     }
   });
@@ -1176,22 +1564,33 @@ document.querySelectorAll('.btn[data-pump]').forEach(b=>{
 // ---------- settings ----------
 async function saveSettings(){
   const body = {
-    soil_low:  parseInt($('set-soil-low').value,10),
-    soil_high: parseInt($('set-soil-high').value,10),
-    tank_min:  parseInt($('set-tank-min').value,10),
-    max_pump_minutes: parseInt($('set-max-min').value,10),
+    soil_low:  parseInt($('set-soil-low').value, 10),
+    soil_high: parseInt($('set-soil-high').value, 10),
+    tank_min:  parseInt($('set-tank-min').value, 10),
+    max_pump_minutes: parseInt($('set-max-min').value, 10),
   };
+  const btn = $('save-btn');
   try{
-    const r = await fetch('/api/settings',{
-      method:'POST',
-      headers:{'content-type':'application/json'},
-      body:JSON.stringify(body),
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify(body),
     });
     const d = await r.json();
-    if(!r.ok) throw new Error(d.detail || 'saqlashda xato');
+    if (!r.ok) throw new Error(d.detail || tr('save_error'));
     lastSettings = d.settings;
-    showToast('Sozlamalar saqlandi', 'ok');
-  }catch(e){ showToast('Saqlash xato: '+e.message, 'err'); }
+    showToast(tr('settings_saved_toast'), 'ok');
+    // Visual feedback on the button itself.
+    btn.classList.add('saved');
+    btn.textContent = tr('saved');
+    clearTimeout(saveSettings._t);
+    saveSettings._t = setTimeout(() => {
+      btn.classList.remove('saved');
+      btn.textContent = tr('save');
+    }, 2000);
+  } catch(e){
+    showToast(tr('save_error') + ' ' + e.message, 'err');
+  }
 }
 
 // ---------- chat ----------
@@ -1206,43 +1605,59 @@ function parseMd(text){
 function addMsg(role, text, raw){
   const d = document.createElement('div');
   d.className = 'msg ' + role;
-  if(raw) d.textContent = text;
+  if (raw) d.textContent = text;
   else d.innerHTML = parseMd(text);
   $('msgs').appendChild(d);
   $('msgs').scrollTop = $('msgs').scrollHeight;
   return d;
 }
 async function sendMsg(){
-  const inp = $('inp'); const m = inp.value.trim(); if(!m) return;
+  const inp = $('inp'); const m = inp.value.trim(); if (!m) return;
   inp.value = '';
   addMsg('user', m, true);
   const loading = addMsg('ai', '…', true);
   $('send-btn').disabled = true;
   try{
-    const r = await fetch('/api/ai/chat',{
-      method:'POST',
-      headers:{'content-type':'application/json'},
-      body:JSON.stringify({message:m}),
+    const r = await fetch('/api/ai/chat', {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify({message: m}),
     });
     const d = await r.json();
-    loading.innerHTML = parseMd(d.reply || "Bo'sh javob");
+    loading.innerHTML = parseMd(d.reply || tr('chat_empty'));
     // If a pump override was applied via chat, refresh status immediately.
-    if(d.action === 'override'){
+    if (d.action === 'override'){
       poll();
     }
-  }catch(e){
-    loading.textContent = "Server bilan aloqa yo'q";
-  }finally{
+  } catch(e){
+    loading.textContent = tr('chat_no_server');
+  } finally{
     $('send-btn').disabled = false;
     inp.focus();
   }
 }
 
+// ---------- refresh button ----------
+function forceRefresh(){
+  const btn = $('refresh-btn');
+  if (btn){
+    btn.classList.remove('spin');
+    // Re-trigger animation by forcing reflow.
+    void btn.offsetWidth;
+    btn.classList.add('spin');
+    setTimeout(() => btn.classList.remove('spin'), 700);
+  }
+  poll();
+  refreshChart();
+}
+
 // ---------- boot ----------
+applyLang();
 poll();
 refreshChart();
 setInterval(poll, 3000);
 setInterval(refreshChart, 15000);
+setInterval(updateLastUpdated, 5000);
 </script>
 </body>
 </html>
