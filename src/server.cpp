@@ -11,16 +11,19 @@
 #ifdef ARDUINO
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
 static uint32_t g_lastTickMs = 0;
 static bool     g_hasDecision = false;
 static bool     g_pumpDecision[2] = {false, false};
+static WiFiClientSecure g_secureClient;
 
 void serverBegin(SystemState& /*state*/) {
     g_lastTickMs = 0;
     g_hasDecision = false;
+    g_secureClient.setInsecure(); // skip cert verification (Cloudflare)
 }
 
 void serverTick(SystemState& state) {
@@ -46,7 +49,10 @@ void serverTick(SystemState& state) {
     char url[MAX_SERVER_URL_LEN + 32];
     snprintf(url, sizeof(url), "%s/api/device/report", cfg.serverUrl);
 
-    http.begin(url);
+    if (strncmp(cfg.serverUrl, "https", 5) == 0)
+        http.begin(g_secureClient, url);
+    else
+        http.begin(url);
     http.addHeader("Content-Type", "application/json");
     if (cfg.serverApiKey[0]) http.addHeader("Authorization", cfg.serverApiKey);
     http.setTimeout(SERVER_HTTP_TIMEOUT_MS);

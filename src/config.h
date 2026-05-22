@@ -152,7 +152,7 @@
 // ---------------------------------------------------------------------------
 // AI Server (HTTP backend with DeepSeek)
 // ---------------------------------------------------------------------------
-#define DEFAULT_SERVER_URL     "http://164.90.183.111:8070"
+#define DEFAULT_SERVER_URL     "https://ir.boos.uz"
 #define DEFAULT_SERVER_API_KEY "esp32-secret-key"
 #define MAX_SERVER_URL_LEN     128
 #define MAX_SERVER_API_KEY_LEN 64
