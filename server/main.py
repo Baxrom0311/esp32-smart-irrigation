@@ -419,17 +419,19 @@ async def post_settings(body: SettingsRequest):
 CHAT_SYSTEM_PROMPT = (
     "You are a friendly smart-irrigation assistant for a small greenhouse with "
     "two independent zones (soil sensor + water tank + pump per zone). "
-    "ALWAYS reply in Uzbek (lotin yozuvi), even if the user writes in another "
-    "language. Be concise, practical, and use emoji for status: "
+    "Reply in the SAME language the user writes in (Uzbek, Russian, or English). "
+    "Be concise, practical, and use emoji for status: "
     "✅ normal, ⚠️ warning, 🔴 critical.\n\n"
     "You CAN control pumps. The server detects pump on/off commands "
-    "(e.g. \"pump 1 ni yoq\", \"nasos 2 ni o'chir\", \"birinchi nasosni "
-    "yoqib ber\", \"pump off\") via keyword matching BEFORE calling you, "
+    "(e.g. \"pump 1 ni yoq\", \"nasos 2 ni o'chir\", \"включи насос 1\", "
+    "\"turn on pump 2\") via keyword matching BEFORE calling you, "
     "executes the override, and replies on your behalf — so when YOU are "
     "called, the user is asking something else (advice, status, explanation). "
     "If the user mentions a pump but the request is ambiguous, suggest the "
     "exact phrase to use (e.g. \"1-nasosni yoq\" or \"2-nasosni o'chir\"). "
-    "Avoid lengthy disclaimers; give actionable advice."
+    "Avoid lengthy disclaimers; give actionable advice.\n\n"
+    "Format your response with markdown: use **bold** for important values, "
+    "use bullet points with - for lists, use \\n for line breaks."
 )
 
 
@@ -1193,10 +1195,19 @@ async function saveSettings(){
 }
 
 // ---------- chat ----------
-function addMsg(role, text){
+function parseMd(text){
+  return text
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g,'<em>$1</em>')
+    .replace(/`(.+?)`/g,'<code>$1</code>')
+    .replace(/\n/g,'<br>');
+}
+function addMsg(role, text, raw){
   const d = document.createElement('div');
   d.className = 'msg ' + role;
-  d.textContent = text;
+  if(raw) d.textContent = text;
+  else d.innerHTML = parseMd(text);
   $('msgs').appendChild(d);
   $('msgs').scrollTop = $('msgs').scrollHeight;
   return d;
@@ -1204,8 +1215,8 @@ function addMsg(role, text){
 async function sendMsg(){
   const inp = $('inp'); const m = inp.value.trim(); if(!m) return;
   inp.value = '';
-  addMsg('user', m);
-  const loading = addMsg('ai', '…');
+  addMsg('user', m, true);
+  const loading = addMsg('ai', '…', true);
   $('send-btn').disabled = true;
   try{
     const r = await fetch('/api/ai/chat',{
@@ -1214,7 +1225,7 @@ async function sendMsg(){
       body:JSON.stringify({message:m}),
     });
     const d = await r.json();
-    loading.textContent = d.reply || "Bo'sh javob";
+    loading.innerHTML = parseMd(d.reply || "Bo'sh javob");
     // If a pump override was applied via chat, refresh status immediately.
     if(d.action === 'override'){
       poll();
