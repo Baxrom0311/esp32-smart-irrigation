@@ -210,8 +210,8 @@ void sensorsTick(SystemState& state) {
     uint16_t rawS1 = readAdcAveraged(PIN_SOIL_MOISTURE1);
     uint16_t rawS2 = readAdcAveraged(PIN_SOIL_MOISTURE2);
 
-    bool t1Err = updateStuckStreak(rawT1, g_tank1Streak);
-    bool t2Err = updateStuckStreak(rawT2, g_tank2Streak);
+    bool t1Err = false;  // tank sensors: 0% when disconnected, no error
+    bool t2Err = false;
     bool s1Err = updateStuckStreak(rawS1, g_soil1Streak);
     bool s2Err = updateStuckStreak(rawS2, g_soil2Streak);
 

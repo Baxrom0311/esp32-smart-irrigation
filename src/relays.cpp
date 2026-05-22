@@ -20,6 +20,7 @@
 #include "relays.h"
 
 #include "config.h"
+#include "server.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -265,44 +266,51 @@ void relaysTick(SystemState& state) {
 
     for (uint8_t i = 0; i < 2; ++i) {
         PumpState& p = state.pumps[i];
-        PumpFsm    fsmEntry = p.fsm;  // snapshot for lockout-edge log
+        PumpFsm    fsmEntry = p.fsm;
         uint8_t  tankPct = (i == 0) ? s.tank1Pct : s.tank2Pct;
         bool     tankErr = (i == 0) ? s.tank1Err : s.tank2Err;
 
-        // 1) Hard lockouts (override demand, force OFF).
-        bool dry = !tankErr && (tankPct < cfg.minWaterPct);
-        if (tankErr) {
-            drivePump(state, p, i, false, now);
-            p.fsm = PumpFsm::LockoutSensor;
-        } else if (dry) {
-            drivePump(state, p, i, false, now);
-            p.fsm = PumpFsm::LockoutDryRun;
-        } else if (p.fsm == PumpFsm::LockoutRuntime &&
-                   isLockoutActive(now, p.lockoutUntilMs)) {
-            // Runtime cooldown: rollover-safe via signed-diff helper.
-            // A naive `now < p.lockoutUntilMs` would invert across the
-            // ~49.7-day millis() wrap and either release the pump
-            // early or hold it forever.
-            drivePump(state, p, i, false, now);
+        // 1) When server controls, skip local lockouts (server handles safety).
+        //    When offline, apply local safety lockouts.
+        if (!serverHasDecision()) {
+            bool dry = !tankErr && (tankPct < cfg.minWaterPct);
+            if (tankErr) {
+                drivePump(state, p, i, false, now);
+                p.fsm = PumpFsm::LockoutSensor;
+            } else if (dry) {
+                drivePump(state, p, i, false, now);
+                p.fsm = PumpFsm::LockoutDryRun;
+            } else if (p.fsm == PumpFsm::LockoutRuntime &&
+                       isLockoutActive(now, p.lockoutUntilMs)) {
+                drivePump(state, p, i, false, now);
+            } else {
+                // Clear lockouts when conditions recover
+                if (p.fsm == PumpFsm::LockoutDryRun &&
+                    tankPct >= cfg.minWaterPct + SAFETY_HYSTERESIS_PCT) {
+                    p.fsm = PumpFsm::Off;
+                }
+                if (p.fsm == PumpFsm::LockoutSensor && !tankErr) {
+                    p.fsm = PumpFsm::Off;
+                }
+                if (p.fsm == PumpFsm::LockoutRuntime &&
+                    !isLockoutActive(now, p.lockoutUntilMs)) {
+                    p.fsm = PumpFsm::Off;
+                    p.lockoutUntilMs = 0;
+                }
+            }
         } else {
-            // 2) Clear non-active lockouts when conditions allow.
-            if (p.fsm == PumpFsm::LockoutDryRun &&
-                tankPct >= cfg.minWaterPct + SAFETY_HYSTERESIS_PCT) {
+            // Server is in control — clear any stale lockout
+            if (p.fsm != PumpFsm::Off && p.fsm != PumpFsm::On) {
                 p.fsm = PumpFsm::Off;
-            }
-            if (p.fsm == PumpFsm::LockoutSensor && !tankErr) {
-                p.fsm = PumpFsm::Off;
-            }
-            if (p.fsm == PumpFsm::LockoutRuntime &&
-                !isLockoutActive(now, p.lockoutUntilMs)) {
-                p.fsm = PumpFsm::Off;
-                p.lockoutUntilMs = 0;
             }
         }
 
-        // 3) Auto-mode demand evaluation.
-        if (cfg.autoMode) {
-            // Each pump uses its corresponding soil sensor (pump 0 → soil1, pump 1 → soil2)
+        // 2) Demand evaluation.
+        //    Server decision always wins when available.
+        //    Offline: use local threshold if autoMode.
+        if (serverHasDecision()) {
+            g_demand[i] = serverGetPumpDecision(i);
+        } else if (cfg.autoMode) {
             uint8_t soilPct = (i == 0) ? s.soil1Pct : s.soil2Pct;
             bool    soilErr = (i == 0) ? s.soil1Err : s.soil2Err;
             g_demand[i] = evaluateAutoDemand(soilPct, soilErr,
@@ -310,14 +318,9 @@ void relaysTick(SystemState& state) {
                                              g_demand[i]);
         }
 
-        // 4) Apply demand if FSM is in a runnable state.
+        // 3) Apply demand if FSM is runnable.
         bool runnable = (p.fsm == PumpFsm::Off || p.fsm == PumpFsm::On);
         if (runnable) {
-            // Manual run-duration timer: when set, expiring it must
-            // drive OFF and clear demand so the pump does not
-            // immediately restart on the next tick. Honoured BEFORE
-            // we re-evaluate demand so a stale `g_demand[i]=true`
-            // from a manual ON cannot win over an expired timer.
             bool timerExpired = (p.runUntilMs != 0) &&
                                 !isLockoutActive(now, p.runUntilMs);
             if (timerExpired) {
@@ -331,7 +334,7 @@ void relaysTick(SystemState& state) {
             } else if (!g_demand[i] && p.on) {
                 drivePump(state, p, i, false, now);
                 p.fsm = PumpFsm::Off;
-                p.runUntilMs = 0;  // explicit demand-drop clears the timer
+                p.runUntilMs = 0;
             }
         }
 

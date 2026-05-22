@@ -23,9 +23,9 @@
 #define PIN_SOIL_MOISTURE1  32
 #define PIN_SOIL_MOISTURE2  33
 
-// DHT11 — temperature + humidity
+// DHT22 — temperature + humidity
 #define PIN_DHT             14
-#define DHT_TYPE            11  // DHT11
+#define DHT_TYPE            22  // DHT22
 
 // Pump relays (active LOW). Driven HIGH = OFF on boot.
 #define PIN_RELAY_PUMP1     26
@@ -58,7 +58,7 @@
 // Settings defaults (used on first boot, before NVS has values)
 // ---------------------------------------------------------------------------
 #define DEFAULT_SOIL_THRESHOLD_PCT   40
-#define DEFAULT_MIN_WATER_PCT        20
+#define DEFAULT_MIN_WATER_PCT         5
 #define DEFAULT_MAX_PUMP_SECONDS   1800   // 30 minutes
 #define DEFAULT_AP_SSID            "SmartIrrigation"
 #define DEFAULT_AP_PASSWORD        "12345678"
@@ -138,10 +138,10 @@
 #define AP_HEALTH_FAIL_TIMEOUT_MS  30000UL
 
 // ---------------------------------------------------------------------------
-// WiFi STA (internet uchun — Telegram bot)
+// WiFi STA (internet uchun — server connection)
 // ---------------------------------------------------------------------------
-#define DEFAULT_STA_SSID       ""
-#define DEFAULT_STA_PASS       ""
+#define DEFAULT_STA_SSID       "12"
+#define DEFAULT_STA_PASS       "12345678"
 #define MAX_STA_SSID_LEN       32
 #define MAX_STA_PASS_LEN       63
 #define STA_CONNECT_TIMEOUT_MS 15000UL
@@ -150,21 +150,15 @@
 #define NVS_KEY_STA_PASS       "stapass"
 
 // ---------------------------------------------------------------------------
-// Telegram bot
+// AI Server (HTTP backend with DeepSeek)
 // ---------------------------------------------------------------------------
-#define DEFAULT_TG_TOKEN       "8828743889:AAGoeF42Q9SWmMngbjxMyvtmuSFPuyZXEel"
-#define DEFAULT_TG_ENABLED     true
-#define DEFAULT_TG_CHAT_COUNT  3
-#define DEFAULT_TG_CHAT_ID_1   "549517499"
-#define DEFAULT_TG_CHAT_ID_2   "1331915608"
-#define DEFAULT_TG_CHAT_ID_3   "5146421024"
+#define DEFAULT_SERVER_URL     "http://10.92.111.75:8000"
+#define DEFAULT_SERVER_API_KEY "esp32-secret-key"
+#define MAX_SERVER_URL_LEN     128
+#define MAX_SERVER_API_KEY_LEN 64
+#define SERVER_DECIDE_INTERVAL_MS  5000UL    // ask server every 5s
+#define SERVER_HTTP_TIMEOUT_MS      10000UL
+#define NVS_KEY_SERVER_URL     "srvurl"
+#define NVS_KEY_SERVER_KEY     "srvkey"
 
-#define MAX_TG_TOKEN_LEN       64
-#define MAX_TG_CHAT_IDS        5
-#define MAX_TG_CHAT_ID_LEN     16
-#define TG_SEND_INTERVAL_MS    2000UL
-#define TG_QUEUE_SIZE          8
-#define NVS_KEY_TG_TOKEN       "tgtkn"
-#define NVS_KEY_TG_CHAT_CNT    "tgcnt"
-#define NVS_KEY_TG_CHAT_PFX    "tgc"
-#define NVS_KEY_TG_ENABLED     "tgen"
+

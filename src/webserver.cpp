@@ -46,7 +46,6 @@
 #include "relays.h"
 #include "sensors.h"
 #include "storage.h"
-#include "telegram.h"
 
 #include <math.h>
 #include <string.h>
@@ -609,13 +608,13 @@ load();
     <input type="password" name="sta_pass" maxlength="63">
   </div>
   <div class="card">
-    <h2>Telegram Bot</h2>
-    <label><input type="checkbox" name="tg_enabled"> Enable notifications</label>
-    <label>Bot token (blank = keep current)</label>
-    <input type="text" name="tg_token" maxlength="64" placeholder="123456:ABC-DEF...">
-    <label>Chat IDs (comma separated, max 5)</label>
-    <input type="text" name="tg_chats" placeholder="549517499,1331915608">
+    <h2>AI Server</h2>
+    <label>Server URL (e.g. http://192.168.1.100:8000)</label>
+    <input type="text" name="server_url" maxlength="128" placeholder="http://your-server:8000">
+    <label>API Key (blank = keep current)</label>
+    <input type="password" name="server_key" maxlength="64">
   </div>
+
   <div class="row">
     <button type="button" onclick="save()">Save</button>
     <button type="button" class="danger" onclick="resetAll()">Factory reset</button>
@@ -631,8 +630,7 @@ async function load(){
   document.querySelector('[name=auto_mode]').value=d.auto_mode?'true':'false';
   document.querySelector('[name=ssid]').value=d.ssid;
   document.querySelector('[name=sta_ssid]').value=d.sta_ssid||'';
-  document.querySelector('[name=tg_enabled]').checked=!!d.tg_enabled;
-  document.querySelector('[name=tg_chats]').value=(d.tg_chats||[]).join(',');
+  document.querySelector('[name=server_url]').value=d.server_url||'';
 }
 async function save(){
   const f=document.getElementById('f');
@@ -650,14 +648,12 @@ async function save(){
     max_time :Number(f.max_time.value),
     auto_mode:f.auto_mode.value==='true',
     ssid     :ssid,
-    sta_ssid :f.sta_ssid.value,
-    tg_enabled:document.querySelector('[name=tg_enabled]').checked
+    sta_ssid :f.sta_ssid.value
   };
   if (pass.length > 0) body.pass = pass;
   if (f.sta_pass.value.length > 0) body.sta_pass = f.sta_pass.value;
-  if (f.tg_token.value.length > 0) body.tg_token = f.tg_token.value;
-  const chats = f.tg_chats.value.split(',').map(s=>s.trim()).filter(s=>s.length>0);
-  if (chats.length > 0) body.tg_chats = chats;
+  if (f.server_url.value.length > 0) body.server_url = f.server_url.value;
+  if (f.server_key.value.length > 0) body.server_key = f.server_key.value;
   const payload=JSON.stringify(body);
   try{
     const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:payload});
@@ -800,14 +796,9 @@ load();
       // WiFi STA
       d["sta_ssid"]  = state.settings.staSSID;
       d["sta_pass"]  = "***";
-      // Telegram
-      d["tg_enabled"]    = state.settings.tgEnabled;
-      d["tg_token"]      = state.settings.tgToken[0] ? "***" : "";
-      d["tg_chat_count"] = state.settings.tgChatCount;
-      JsonArray chats = d.createNestedArray("tg_chats");
-      for (uint8_t i = 0; i < state.settings.tgChatCount; i++) {
-          chats.add(state.settings.tgChatIds[i]);
-      }
+      // AI Server
+      d["server_url"] = state.settings.serverUrl;
+      d["server_key"] = state.settings.serverApiKey[0] ? "***" : "";
       AUDIT_JSON_DOC(d, "/api/settings GET");
       String out;
       serializeJson(d, out);
@@ -865,12 +856,11 @@ load();
           patch.allowOpen = d["allow_open"].as<bool>();
       }
 
-      // WiFi STA + Telegram fields (applied directly to ns after patch)
+      // WiFi STA fields (applied directly to ns after patch)
       bool hasStaSsid = d.containsKey("sta_ssid");
       bool hasStaPass = d.containsKey("sta_pass");
-      bool hasTgEnabled = d.containsKey("tg_enabled");
-      bool hasTgToken = d.containsKey("tg_token");
-      bool hasTgChats = d.containsKey("tg_chats");
+      bool hasServerUrl = d.containsKey("server_url");
+      bool hasServerKey = d.containsKey("server_key");
 
       // Snapshot current settings under the mutex. We capture both
       // `ns` (what we're about to mutate) and `prev` (rollback target
@@ -894,7 +884,7 @@ load();
           return;
       }
 
-      // Apply STA/Telegram fields directly
+      // Apply STA/Server fields directly
       if (hasStaSsid) {
           const char* v = d["sta_ssid"].as<const char*>();
           if (v) { strncpy(ns.staSSID, v, MAX_STA_SSID_LEN); ns.staSSID[MAX_STA_SSID_LEN] = '\0'; }
@@ -903,23 +893,13 @@ load();
           const char* v = d["sta_pass"].as<const char*>();
           if (v && strcmp(v, "***") != 0) { strncpy(ns.staPass, v, MAX_STA_PASS_LEN); ns.staPass[MAX_STA_PASS_LEN] = '\0'; }
       }
-      if (hasTgEnabled) { ns.tgEnabled = d["tg_enabled"].as<bool>(); }
-      if (hasTgToken) {
-          const char* v = d["tg_token"].as<const char*>();
-          if (v && strcmp(v, "***") != 0) { strncpy(ns.tgToken, v, MAX_TG_TOKEN_LEN); ns.tgToken[MAX_TG_TOKEN_LEN] = '\0'; }
+      if (hasServerUrl) {
+          const char* v = d["server_url"].as<const char*>();
+          if (v) { strncpy(ns.serverUrl, v, MAX_SERVER_URL_LEN); ns.serverUrl[MAX_SERVER_URL_LEN] = '\0'; }
       }
-      if (hasTgChats && d["tg_chats"].is<JsonArray>()) {
-          JsonArray arr = d["tg_chats"].as<JsonArray>();
-          ns.tgChatCount = 0;
-          for (JsonVariant c : arr) {
-              if (ns.tgChatCount >= MAX_TG_CHAT_IDS) break;
-              const char* id = c.as<const char*>();
-              if (id && id[0]) {
-                  strncpy(ns.tgChatIds[ns.tgChatCount], id, MAX_TG_CHAT_ID_LEN);
-                  ns.tgChatIds[ns.tgChatCount][MAX_TG_CHAT_ID_LEN] = '\0';
-                  ns.tgChatCount++;
-              }
-          }
+      if (hasServerKey) {
+          const char* v = d["server_key"].as<const char*>();
+          if (v && strcmp(v, "***") != 0) { strncpy(ns.serverApiKey, v, MAX_SERVER_API_KEY_LEN); ns.serverApiKey[MAX_SERVER_API_KEY_LEN] = '\0'; }
       }
 
       // Defence in depth: settingsClamp() catches any numeric drift
@@ -1519,88 +1499,6 @@ void webserverBegin(SystemState& state) {
         if (needRestart) {
             webserverScheduleApRestart(state);
         }
-    });
-
-    // ---- Telegram settings endpoints ----------------------------
-    g_server.on("/api/telegram", HTTP_GET, [&state](AsyncWebServerRequest* req) {
-        if (!enforceRateLimit(req, RateLimitEndpoint::Settings, state)) return;
-        StaticJsonDocument<512> doc;
-        if (state.mutex && xSemaphoreTake(state.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            doc["enabled"] = state.settings.tgEnabled;
-            doc["token"] = state.settings.tgToken[0] ? "***" : "";
-            doc["sta_ssid"] = state.settings.staSSID;
-            doc["sta_connected"] = (WiFi.status() == WL_CONNECTED);
-            JsonArray chats = doc.createNestedArray("chat_ids");
-            for (uint8_t i = 0; i < state.settings.tgChatCount; i++) {
-                chats.add(state.settings.tgChatIds[i]);
-            }
-            xSemaphoreGive(state.mutex);
-        }
-        char buf[512];
-        serializeJson(doc, buf, sizeof(buf));
-        req->send(200, "application/json", buf);
-        httpAccount(state, 200);
-    });
-
-    g_server.on("/api/telegram", HTTP_POST,
-        [&state](AsyncWebServerRequest* req) { /* body handler below */ },
-        nullptr,
-        [&state](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t /*idx*/, size_t /*total*/) {
-        if (!enforceRateLimit(req, RateLimitEndpoint::Settings, state)) return;
-        StaticJsonDocument<512> doc;
-        if (deserializeJson(doc, data, len) != DeserializationError::Ok) {
-            req->send(400, "application/json", "{\"error\":\"invalid_json\"}");
-            httpAccount(state, 400);
-            return;
-        }
-        if (state.mutex && xSemaphoreTake(state.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            if (doc.containsKey("enabled"))
-                state.settings.tgEnabled = doc["enabled"].as<bool>();
-            if (doc.containsKey("token")) {
-                const char* t = doc["token"].as<const char*>();
-                if (t && strcmp(t, "***") != 0) {
-                    strncpy(state.settings.tgToken, t, MAX_TG_TOKEN_LEN);
-                    state.settings.tgToken[MAX_TG_TOKEN_LEN] = '\0';
-                }
-            }
-            if (doc.containsKey("sta_ssid")) {
-                const char* s = doc["sta_ssid"].as<const char*>();
-                if (s) { strncpy(state.settings.staSSID, s, MAX_STA_SSID_LEN); state.settings.staSSID[MAX_STA_SSID_LEN] = '\0'; }
-            }
-            if (doc.containsKey("sta_pass")) {
-                const char* p = doc["sta_pass"].as<const char*>();
-                if (p && strcmp(p, "***") != 0) { strncpy(state.settings.staPass, p, MAX_STA_PASS_LEN); state.settings.staPass[MAX_STA_PASS_LEN] = '\0'; }
-            }
-            if (doc.containsKey("chat_ids")) {
-                JsonArray arr = doc["chat_ids"].as<JsonArray>();
-                state.settings.tgChatCount = 0;
-                for (JsonVariant v : arr) {
-                    if (state.settings.tgChatCount >= MAX_TG_CHAT_IDS) break;
-                    const char* cid = v.as<const char*>();
-                    if (cid && cid[0]) {
-                        strncpy(state.settings.tgChatIds[state.settings.tgChatCount], cid, MAX_TG_CHAT_ID_LEN);
-                        state.settings.tgChatIds[state.settings.tgChatCount][MAX_TG_CHAT_ID_LEN] = '\0';
-                        state.settings.tgChatCount++;
-                    }
-                }
-            }
-            storageSaveSettings(state.settings);
-            xSemaphoreGive(state.mutex);
-            // Reconnect STA if credentials changed
-            if (state.settings.staSSID[0] != '\0') {
-                WiFi.mode(WIFI_AP_STA);
-                WiFi.begin(state.settings.staSSID, state.settings.staPass);
-            }
-        }
-        req->send(200, "application/json", "{\"ok\":true}");
-        httpAccount(state, 200);
-    });
-
-    g_server.on("/api/telegram/test", HTTP_POST, [&state](AsyncWebServerRequest* req) {
-        if (!enforceRateLimit(req, RateLimitEndpoint::Settings, state)) return;
-        telegramSend(state, "✅ Test xabar — Telegram bot ishlayapti!");
-        req->send(200, "application/json", "{\"ok\":true,\"msg\":\"test queued\"}");
-        httpAccount(state, 200);
     });
 
     g_server.onNotFound([&state](AsyncWebServerRequest* req) {

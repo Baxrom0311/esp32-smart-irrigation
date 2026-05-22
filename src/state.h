@@ -44,11 +44,10 @@ struct Settings {
     // WiFi STA (internet uchun)
     char     staSSID[MAX_STA_SSID_LEN + 1];
     char     staPass[MAX_STA_PASS_LEN + 2];
-    // Telegram bot
-    bool     tgEnabled;
-    char     tgToken[MAX_TG_TOKEN_LEN + 1];
-    uint8_t  tgChatCount;
-    char     tgChatIds[MAX_TG_CHAT_IDS][MAX_TG_CHAT_ID_LEN + 1];
+    // AI Server
+    char     serverUrl[MAX_SERVER_URL_LEN + 1];
+    char     serverApiKey[MAX_SERVER_API_KEY_LEN + 1];
+
 };
 
 // ---------------------------------------------------------------------------

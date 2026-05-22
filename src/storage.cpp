@@ -37,17 +37,16 @@ void settingsLoadDefaults(Settings& out) {
     out.soil2RawDry = DEFAULT_SOIL_RAW_DRY;
     out.soil2RawWet = DEFAULT_SOIL_RAW_WET;
     // WiFi STA
-    out.staSSID[0] = '\0';
-    out.staPass[0] = '\0';
-    // Telegram
-    out.tgEnabled = DEFAULT_TG_ENABLED;
-    strncpy(out.tgToken, DEFAULT_TG_TOKEN, sizeof(out.tgToken) - 1);
-    out.tgToken[sizeof(out.tgToken) - 1] = '\0';
-    out.tgChatCount = DEFAULT_TG_CHAT_COUNT;
-    memset(out.tgChatIds, 0, sizeof(out.tgChatIds));
-    strncpy(out.tgChatIds[0], DEFAULT_TG_CHAT_ID_1, MAX_TG_CHAT_ID_LEN);
-    strncpy(out.tgChatIds[1], DEFAULT_TG_CHAT_ID_2, MAX_TG_CHAT_ID_LEN);
-    strncpy(out.tgChatIds[2], DEFAULT_TG_CHAT_ID_3, MAX_TG_CHAT_ID_LEN);
+    strncpy(out.staSSID, DEFAULT_STA_SSID, sizeof(out.staSSID) - 1);
+    out.staSSID[sizeof(out.staSSID) - 1] = '\0';
+    strncpy(out.staPass, DEFAULT_STA_PASS, sizeof(out.staPass) - 1);
+    out.staPass[sizeof(out.staPass) - 1] = '\0';
+    // AI Server
+    strncpy(out.serverUrl, DEFAULT_SERVER_URL, sizeof(out.serverUrl) - 1);
+    out.serverUrl[sizeof(out.serverUrl) - 1] = '\0';
+    strncpy(out.serverApiKey, DEFAULT_SERVER_API_KEY, sizeof(out.serverApiKey) - 1);
+    out.serverApiKey[sizeof(out.serverApiKey) - 1] = '\0';
+
 }
 
 bool settingsClamp(Settings& s) {
@@ -190,20 +189,13 @@ bool storageLoadSettings(Settings& out) {
     strncpy(out.staPass, staPass.c_str(), sizeof(out.staPass) - 1);
     out.staPass[sizeof(out.staPass) - 1] = '\0';
 
-    // Telegram
-    out.tgEnabled = g_prefs.getBool(NVS_KEY_TG_ENABLED, false);
-    String tgToken = g_prefs.getString(NVS_KEY_TG_TOKEN, "");
-    strncpy(out.tgToken, tgToken.c_str(), sizeof(out.tgToken) - 1);
-    out.tgToken[sizeof(out.tgToken) - 1] = '\0';
-    out.tgChatCount = g_prefs.getUChar(NVS_KEY_TG_CHAT_CNT, 0);
-    if (out.tgChatCount > MAX_TG_CHAT_IDS) out.tgChatCount = MAX_TG_CHAT_IDS;
-    for (uint8_t i = 0; i < out.tgChatCount; i++) {
-        char key[8];
-        snprintf(key, sizeof(key), "%s%d", NVS_KEY_TG_CHAT_PFX, i);
-        String cid = g_prefs.getString(key, "");
-        strncpy(out.tgChatIds[i], cid.c_str(), MAX_TG_CHAT_ID_LEN);
-        out.tgChatIds[i][MAX_TG_CHAT_ID_LEN] = '\0';
-    }
+    // AI Server
+    String srvUrl = g_prefs.getString(NVS_KEY_SERVER_URL, "");
+    String srvKey = g_prefs.getString(NVS_KEY_SERVER_KEY, "");
+    strncpy(out.serverUrl, srvUrl.c_str(), sizeof(out.serverUrl) - 1);
+    out.serverUrl[sizeof(out.serverUrl) - 1] = '\0';
+    strncpy(out.serverApiKey, srvKey.c_str(), sizeof(out.serverApiKey) - 1);
+    out.serverApiKey[sizeof(out.serverApiKey) - 1] = '\0';
 
     g_prefs.end();
 
@@ -253,15 +245,9 @@ bool storageSaveSettings(const Settings& s) {
     // WiFi STA
     g_prefs.putString(NVS_KEY_STA_SSID, tmp.staSSID);
     g_prefs.putString(NVS_KEY_STA_PASS, tmp.staPass);
-    // Telegram
-    g_prefs.putBool(NVS_KEY_TG_ENABLED, tmp.tgEnabled);
-    g_prefs.putString(NVS_KEY_TG_TOKEN, tmp.tgToken);
-    g_prefs.putUChar(NVS_KEY_TG_CHAT_CNT, tmp.tgChatCount);
-    for (uint8_t i = 0; i < tmp.tgChatCount && i < MAX_TG_CHAT_IDS; i++) {
-        char key[8];
-        snprintf(key, sizeof(key), "%s%d", NVS_KEY_TG_CHAT_PFX, i);
-        g_prefs.putString(key, tmp.tgChatIds[i]);
-    }
+    // AI Server
+    g_prefs.putString(NVS_KEY_SERVER_URL, tmp.serverUrl);
+    g_prefs.putString(NVS_KEY_SERVER_KEY, tmp.serverApiKey);
     g_prefs.end();
     if (!ok) {
         Serial.println(F("[storage] partial NVS write; settings not fully persisted"));

@@ -22,7 +22,7 @@
 #include "relays.h"
 #include "display.h"
 #include "webserver.h"
-#include "telegram.h"
+#include "server.h"
 
 static SystemState g_state{};
 
@@ -71,7 +71,7 @@ void setup() {
     relaysBegin(g_state);
     displayBegin(g_state);
     webserverBegin(g_state);
-    telegramBegin(g_state);
+    serverBegin(g_state);
 
     // Task WDT: any hang in loop() longer than WDT_TIMEOUT_S forces a
     // reset. Relays are driven OFF on boot, so a reset is fail-safe.
@@ -86,10 +86,10 @@ void setup() {
 void loop() {
     esp_task_wdt_reset();
     sensorsTick(g_state);
+    serverTick(g_state);
     relaysTick(g_state);
     displayTick(g_state);
     webserverTick(g_state);
-    telegramTick(g_state);
 
     // Bump the loop-tick counter so /api/metrics can surface main-
     // task progress. Also refresh the heap watermark on every

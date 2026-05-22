@@ -7,3 +7,6 @@ build/
 *.bin
 *.hex
 .DS_Store
+
+# Server secrets
+server/.env
