@@ -27,11 +27,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pathlib
 import re
 import time
-from collections import deque
-from typing import Any, Deque
+from contextlib import asynccontextmanager
+from typing import Any
 
+import aiosqlite
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -48,24 +50,24 @@ DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 # Treat the placeholder as "unset".
 AI_ENABLED = bool(DEEPSEEK_API_KEY) and DEEPSEEK_API_KEY != "your-deepseek-api-key-here"
 
-HISTORY_MAX = 100
-ONLINE_WINDOW_SECONDS = 90  # ESP32 reports every ~30s; allow 3 misses.
-AI_MIN_INTERVAL_SECONDS = 25  # Re-use last AI decision if called more often.
+HISTORY_DEFAULT_LIMIT = 200       # default for GET /api/history
+HISTORY_MAX_LIMIT = 1000          # hard cap on GET /api/history?limit=
+ONLINE_WINDOW_SECONDS = 90        # ESP32 reports every ~30s; allow 3 misses.
+AI_MIN_INTERVAL_SECONDS = 25      # Re-use last AI decision if called more often.
+HISTORY_RETENTION_DAYS = 30       # delete sensor_history rows older than this
+CLEANUP_INTERVAL_SECONDS = 3600   # background cleanup cadence
 
-app = FastAPI(title="Smart Irrigation AI Server", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# SQLite database lives next to this file; auto-created on first run.
+DB_PATH = pathlib.Path(__file__).resolve().parent / "irrigation.db"
 
 
 # ---------------------------------------------------------------------------
-# In-memory state
+# In-memory state (only what's needed for fast /api/status — everything else
+# is persisted in SQLite via the helpers below).
 # ---------------------------------------------------------------------------
 
 # Default thresholds — used by both the AI prompt and the local fallback.
+# These are loaded from / saved to the `settings` table at runtime.
 settings: dict[str, Any] = {
     "soil_low": 35,        # below this => start watering
     "soil_high": 60,       # above this => stop watering
@@ -74,8 +76,10 @@ settings: dict[str, Any] = {
 }
 
 # pump_overrides[i] in {"auto", "on", "off"} — auto means AI decides.
+# Loaded from / saved to the `overrides` table at runtime.
 pump_overrides: dict[int, str] = {1: "auto", 2: "auto"}
 
+# Cached for fast /api/status responses (no DB query needed for polling).
 latest_data: dict[str, Any] = {}
 last_report_time: float = 0.0
 last_decision: dict[str, Any] = {
@@ -86,13 +90,266 @@ last_decision: dict[str, Any] = {
     "overrides": {"1": "auto", "2": "auto"},
     "ts": 0.0,
 }
-history: Deque[dict[str, Any]] = deque(maxlen=HISTORY_MAX)
-chat_history: Deque[dict[str, str]] = deque(maxlen=20)
 
 # Lock around AI calls so we don't fire many in parallel for the same report.
 _ai_lock = asyncio.Lock()
 _last_ai_call_ts: float = 0.0
 _last_ai_result: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# SQLite layer (raw SQL, single shared aiosqlite connection)
+# ---------------------------------------------------------------------------
+
+# A single shared async connection. aiosqlite serializes operations on its
+# internal worker thread, so concurrent FastAPI request handlers are safe.
+_db: aiosqlite.Connection | None = None
+_cleanup_task: asyncio.Task[None] | None = None
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS sensor_history (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        REAL    NOT NULL,
+    soil1     INTEGER,
+    soil2     INTEGER,
+    tank1     INTEGER,
+    tank2     INTEGER,
+    temp      REAL,
+    hum       REAL,
+    tank1_err INTEGER,
+    tank2_err INTEGER,
+    soil1_err INTEGER,
+    soil2_err INTEGER,
+    pump1     INTEGER,
+    pump2     INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_sensor_history_ts ON sensor_history(ts);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_history (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      REAL    NOT NULL,
+    role    TEXT    NOT NULL,
+    content TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_history_ts ON chat_history(ts);
+
+CREATE TABLE IF NOT EXISTS overrides (
+    pump INTEGER PRIMARY KEY,
+    mode TEXT    NOT NULL
+);
+"""
+
+
+async def _get_db() -> aiosqlite.Connection:
+    """Return the shared connection, opening it lazily."""
+    global _db
+    if _db is None:
+        _db = await aiosqlite.connect(str(DB_PATH))
+        _db.row_factory = aiosqlite.Row
+    return _db
+
+
+async def _init_db() -> None:
+    db = await _get_db()
+    await db.executescript(_SCHEMA_SQL)
+    await db.commit()
+
+
+async def _load_settings_from_db() -> None:
+    """Populate the in-memory `settings` dict from the DB."""
+    db = await _get_db()
+    async with db.execute("SELECT key, value FROM settings") as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        try:
+            settings[row["key"]] = json.loads(row["value"])
+        except (json.JSONDecodeError, TypeError) as exc:
+            print(f"[db] invalid settings row {row['key']!r}: {exc}")
+
+
+async def _save_settings_to_db(payload: dict[str, Any]) -> None:
+    """Upsert each provided setting key/value."""
+    if not payload:
+        return
+    db = await _get_db()
+    await db.executemany(
+        "INSERT INTO settings(key, value) VALUES(?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [(k, json.dumps(v)) for k, v in payload.items()],
+    )
+    await db.commit()
+
+
+async def _load_overrides_from_db() -> None:
+    db = await _get_db()
+    async with db.execute("SELECT pump, mode FROM overrides") as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        pump = int(row["pump"])
+        mode = str(row["mode"])
+        if pump in (1, 2) and mode in ("auto", "on", "off"):
+            pump_overrides[pump] = mode
+
+
+async def _save_override_to_db(pump: int, mode: str) -> None:
+    db = await _get_db()
+    await db.execute(
+        "INSERT INTO overrides(pump, mode) VALUES(?, ?) "
+        "ON CONFLICT(pump) DO UPDATE SET mode = excluded.mode",
+        (pump, mode),
+    )
+    await db.commit()
+
+
+async def _insert_sensor_history(ts: float, data: dict[str, Any]) -> None:
+    db = await _get_db()
+    await db.execute(
+        "INSERT INTO sensor_history "
+        "(ts, soil1, soil2, tank1, tank2, temp, hum, "
+        " tank1_err, tank2_err, soil1_err, soil2_err, pump1, pump2) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            ts,
+            data.get("soil1"),
+            data.get("soil2"),
+            data.get("tank1"),
+            data.get("tank2"),
+            data.get("temp"),
+            data.get("hum"),
+            int(bool(data.get("tank1_err"))),
+            int(bool(data.get("tank2_err"))),
+            int(bool(data.get("soil1_err"))),
+            int(bool(data.get("soil2_err"))),
+            int(bool(data.get("pump1"))),
+            int(bool(data.get("pump2"))),
+        ),
+    )
+    await db.commit()
+
+
+async def _insert_chat_message(role: str, content: str) -> None:
+    db = await _get_db()
+    await db.execute(
+        "INSERT INTO chat_history(ts, role, content) VALUES(?, ?, ?)",
+        (time.time(), role, content),
+    )
+    await db.commit()
+
+
+async def _fetch_history(limit: int) -> list[dict[str, Any]]:
+    """Return the most recent `limit` rows in chronological order (oldest first).
+
+    The chart code expects ascending time order, so we query DESC + LIMIT and
+    reverse the result.
+    """
+    db = await _get_db()
+    async with db.execute(
+        "SELECT ts, soil1, soil2, tank1, tank2, temp, hum, "
+        "       tank1_err, tank2_err, soil1_err, soil2_err, pump1, pump2 "
+        "FROM sensor_history ORDER BY ts DESC LIMIT ?",
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+    items: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        items.append({
+            "ts": row["ts"],
+            "soil1": row["soil1"],
+            "soil2": row["soil2"],
+            "tank1": row["tank1"],
+            "tank2": row["tank2"],
+            "temp": row["temp"],
+            "hum": row["hum"],
+            "tank1_err": bool(row["tank1_err"]) if row["tank1_err"] is not None else False,
+            "tank2_err": bool(row["tank2_err"]) if row["tank2_err"] is not None else False,
+            "soil1_err": bool(row["soil1_err"]) if row["soil1_err"] is not None else False,
+            "soil2_err": bool(row["soil2_err"]) if row["soil2_err"] is not None else False,
+            "pump1": bool(row["pump1"]) if row["pump1"] is not None else False,
+            "pump2": bool(row["pump2"]) if row["pump2"] is not None else False,
+        })
+    return items
+
+
+async def _count_history() -> int:
+    db = await _get_db()
+    async with db.execute("SELECT COUNT(*) AS n FROM sensor_history") as cur:
+        row = await cur.fetchone()
+    return int(row["n"]) if row is not None else 0
+
+
+async def _cleanup_old_history() -> int:
+    """Delete sensor_history rows older than HISTORY_RETENTION_DAYS. Returns deleted row count."""
+    cutoff = time.time() - HISTORY_RETENTION_DAYS * 24 * 3600
+    db = await _get_db()
+    cur = await db.execute("DELETE FROM sensor_history WHERE ts < ?", (cutoff,))
+    deleted = cur.rowcount or 0
+    await cur.close()
+    await db.commit()
+    return deleted
+
+
+async def _cleanup_loop() -> None:
+    """Background task: prune old history every CLEANUP_INTERVAL_SECONDS."""
+    while True:
+        try:
+            await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+            deleted = await _cleanup_old_history()
+            if deleted:
+                print(f"[db] cleanup: deleted {deleted} old sensor_history rows")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            print(f"[db] cleanup error: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# FastAPI lifespan — DB init, settings/override hydration, cleanup task
+# ---------------------------------------------------------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):  # noqa: ARG001
+    global _cleanup_task
+    await _init_db()
+    await _load_settings_from_db()
+    await _load_overrides_from_db()
+    # Run a cleanup pass on startup so a long-stopped server doesn't keep stale rows.
+    try:
+        deleted = await _cleanup_old_history()
+        if deleted:
+            print(f"[db] startup cleanup: deleted {deleted} old sensor_history rows")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[db] startup cleanup error: {exc}")
+    _cleanup_task = asyncio.create_task(_cleanup_loop())
+    try:
+        yield
+    finally:
+        if _cleanup_task is not None:
+            _cleanup_task.cancel()
+            try:
+                await _cleanup_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        global _db
+        if _db is not None:
+            try:
+                await _db.close()
+            except Exception:  # noqa: BLE001
+                pass
+            _db = None
+
+
+app = FastAPI(title="Smart Irrigation AI Server", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -325,8 +582,13 @@ async def device_report(data: SensorReport, request: Request):
     latest_data = data.model_dump()
     last_report_time = now
 
-    # Append to ring buffer for dashboard chart.
-    history.append({"ts": now, **latest_data})
+    # Persist this report to the sensor_history table (used by /api/history
+    # and the dashboard chart). Failures are logged but don't break the
+    # device-control loop — the ESP32 still gets its pump command back.
+    try:
+        await _insert_sensor_history(now, latest_data)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[db] insert sensor_history failed: {exc}")
 
     # Decide pumps.
     ai_result = await _ai_decision(data)
@@ -375,14 +637,20 @@ async def status():
 
 
 @app.get("/api/history")
-async def get_history(limit: int = HISTORY_MAX):
-    limit = max(1, min(limit, HISTORY_MAX))
-    return {"items": list(history)[-limit:], "count": len(history)}
+async def get_history(limit: int = HISTORY_DEFAULT_LIMIT):
+    limit = max(1, min(limit, HISTORY_MAX_LIMIT))
+    items = await _fetch_history(limit)
+    total = await _count_history()
+    return {"items": items, "count": total}
 
 
 @app.post("/api/override")
 async def post_override(body: OverrideRequest):
     pump_overrides[body.pump] = body.mode
+    try:
+        await _save_override_to_db(body.pump, body.mode)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[db] save override failed: {exc}")
     return {"ok": True, "overrides": {str(k): v for k, v in pump_overrides.items()}}
 
 
@@ -406,6 +674,10 @@ async def post_settings(body: SettingsRequest):
         )
 
     settings.update(payload)
+    try:
+        await _save_settings_to_db(payload)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[db] save settings failed: {exc}")
     # Drop AI cache so the new prompt takes effect on next report.
     global _last_ai_result
     _last_ai_result = None
@@ -532,10 +804,18 @@ def _chat_context() -> str:
     return "\n".join(parts)
 
 
+async def _safe_chat_log(role: str, content: str) -> None:
+    """Persist a chat message; log + swallow DB errors so chat keeps working."""
+    try:
+        await _insert_chat_message(role, content)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[db] chat log failed: {exc}")
+
+
 @app.post("/api/ai/chat")
 async def ai_chat(body: ChatRequest):
     user_msg = body.message.strip()
-    chat_history.append({"role": "user", "content": user_msg})
+    await _safe_chat_log("user", user_msg)
 
     # ----- Keyword pump control (no AI call needed) -----
     mode, pump_num = _detect_pump_command(user_msg)
@@ -545,7 +825,7 @@ async def ai_chat(body: ChatRequest):
                 "🤔 Qaysi nasos? Iltimos, raqamini ayting.\n"
                 "Misol: \"1-nasosni yoq\" yoki \"2-nasosni o'chir\"."
             )
-            chat_history.append({"role": "assistant", "content": reply})
+            await _safe_chat_log("assistant", reply)
             return {
                 "reply": reply,
                 "ai_enabled": AI_ENABLED,
@@ -554,6 +834,10 @@ async def ai_chat(body: ChatRequest):
 
         # Apply override (same effect as Force ON/OFF buttons)
         pump_overrides[pump_num] = mode
+        try:
+            await _save_override_to_db(pump_num, mode)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[db] save override failed: {exc}")
         if mode == "on":
             reply = (
                 f"✅ Nasos {pump_num} ga *yoqish* buyrug'i berildi. "
@@ -570,7 +854,7 @@ async def ai_chat(body: ChatRequest):
                 f"nasosni to'xtatadi.\n"
                 f"Avto rejimga qaytarish uchun \"Avto\" tugmasini bosing."
             )
-        chat_history.append({"role": "assistant", "content": reply})
+        await _safe_chat_log("assistant", reply)
         return {
             "reply": reply,
             "ai_enabled": AI_ENABLED,
@@ -585,14 +869,14 @@ async def ai_chat(body: ChatRequest):
             "🔴 AI server sozlanmagan. .env faylida DEEPSEEK_API_KEY ni to'ldiring "
             "va serverni qayta ishga tushiring."
         )
-        chat_history.append({"role": "assistant", "content": reply})
+        await _safe_chat_log("assistant", reply)
         return {"reply": reply, "ai_enabled": False}
 
     full_prompt = CHAT_SYSTEM_PROMPT + "\n\nContext:\n" + _chat_context()
     reply = await ask_deepseek(full_prompt, user_msg, temperature=0.5, max_tokens=400)
     if not reply:
         reply = "⚠️ AI bilan aloqa o'rnatib bo'lmadi. Keyinroq qayta urinib ko'ring."
-    chat_history.append({"role": "assistant", "content": reply})
+    await _safe_chat_log("assistant", reply)
     return {"reply": reply, "ai_enabled": True}
 
 
@@ -602,7 +886,12 @@ async def ai_chat(body: ChatRequest):
 
 @app.get("/healthz")
 async def healthz():
-    return JSONResponse({"ok": True, "ai": AI_ENABLED, "history": len(history)})
+    try:
+        hist_count = await _count_history()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[db] healthz count failed: {exc}")
+        hist_count = -1
+    return JSONResponse({"ok": True, "ai": AI_ENABLED, "history": hist_count})
 
 
 # ---------------------------------------------------------------------------

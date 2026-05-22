@@ -10,3 +10,9 @@ build/
 
 # Server secrets
 server/.env
+
+# Server database
+server/irrigation.db
+server/irrigation.db-journal
+server/irrigation.db-wal
+server/irrigation.db-shm
