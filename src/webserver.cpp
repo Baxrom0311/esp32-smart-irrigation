@@ -269,33 +269,37 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Smart Irrigation</title>
 <style>
-  :root { color-scheme: dark; }
-  body { font-family: system-ui,Arial,sans-serif; margin:0; background:#0b1220; color:#e6edf3; }
-  header { background:#111c2e; padding:14px 18px; display:flex; justify-content:space-between; align-items:center; }
+  :root { --bg:#0b1220; --fg:#e6edf3; --card:#111c2e; --hdr:#111c2e; --link:#7ec3ff; --muted:#9ab; --bar-bg:#1d2a44; --bar:#3ad29f; --input-bg:#0b1220; --input-border:#2d3748; --btn:#1f6feb; --btn-off:#444c56; --danger:#cf3636; --ok:#3ad29f; --warn:#fdba74; --err:#ff6b6b; color-scheme:dark; }
+  [data-theme="light"] { --bg:#f4f6f8; --fg:#1a1a2e; --card:#fff; --hdr:#fff; --link:#1a6dd4; --muted:#666; --bar-bg:#e0e4ea; --bar:#2ba87a; --input-bg:#fff; --input-border:#ccd; --btn:#1a6dd4; --btn-off:#aab; --danger:#d32f2f; --ok:#2ba87a; --warn:#c77800; --err:#d32f2f; color-scheme:light; }
+  body { font-family:system-ui,Arial,sans-serif; margin:0; background:var(--bg); color:var(--fg); }
+  header { background:var(--hdr); padding:14px 18px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--input-border); }
   header h1 { margin:0; font-size:18px; }
-  nav a { color:#7ec3ff; margin-left:14px; text-decoration:none; }
+  nav a { color:var(--link); margin-left:14px; text-decoration:none; }
   main { padding:16px; max-width:720px; margin:0 auto; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
-  .card { background:#111c2e; padding:14px; border-radius:10px; }
-  .card h2 { margin:0 0 8px; font-size:14px; color:#9ab; text-transform:uppercase; letter-spacing:.05em; }
+  .card { background:var(--card); padding:14px; border-radius:10px; }
+  .card h2 { margin:0 0 8px; font-size:14px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
   .val { font-size:28px; font-weight:600; }
-  .bar { height:8px; background:#1d2a44; border-radius:4px; margin-top:8px; overflow:hidden; }
-  .bar > div { height:100%; background:#3ad29f; transition:width .3s; }
-  .err .val, .err h2 { color:#ff6b6b; }
+  .bar { height:8px; background:var(--bar-bg); border-radius:4px; margin-top:8px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--bar); transition:width .3s; }
+  .err .val, .err h2 { color:var(--err); }
   .row { display:flex; gap:12px; margin-top:16px; flex-wrap:wrap; }
-  button { background:#1f6feb; color:#fff; border:0; padding:10px 18px; border-radius:8px; font-size:15px; cursor:pointer; }
-  button.off { background:#444c56; }
-  button.danger { background:#cf3636; }
-  label { display:block; margin:10px 0 4px; font-size:13px; color:#9ab; }
-  input[type=number],input[type=text],input[type=password],select { width:100%; padding:8px; border-radius:6px; border:1px solid #2d3748; background:#0b1220; color:#e6edf3; box-sizing:border-box; }
-  .banner { background:#cf3636; color:#fff; padding:10px; border-radius:8px; margin-bottom:12px; }
-  .ok { color:#3ad29f; }
-  .warn { color:#fdba74; }
-  .err-inline { color:#ff6b6b; font-weight:600; }
-  .small { font-size:12px; color:#9ab; }
-</style></head><body>
+  button { background:var(--btn); color:#fff; border:0; padding:10px 18px; border-radius:8px; font-size:15px; cursor:pointer; }
+  button.off { background:var(--btn-off); }
+  button.danger { background:var(--danger); }
+  label { display:block; margin:10px 0 4px; font-size:13px; color:var(--muted); }
+  input[type=number],input[type=text],input[type=password],select { width:100%; padding:8px; border-radius:6px; border:1px solid var(--input-border); background:var(--input-bg); color:var(--fg); box-sizing:border-box; }
+  .banner { background:var(--danger); color:#fff; padding:10px; border-radius:8px; margin-bottom:12px; }
+  .ok { color:var(--ok); }
+  .warn { color:var(--warn); }
+  .err-inline { color:var(--err); font-weight:600; }
+  .small { font-size:12px; color:var(--muted); }
+  #theme-btn { background:none; border:none; font-size:20px; cursor:pointer; padding:4px 8px; }
+</style>
+<script>((d)=>{const t=localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');d.documentElement.setAttribute('data-theme',t);d.addEventListener('DOMContentLoaded',()=>{const b=d.getElementById('theme-btn');if(b)b.textContent=t==='dark'?'☀️':'🌙';});})(document);</script>
+</head><body>
 <header><h1>🌱 Smart Irrigation</h1>
-<nav><a href="/">Dashboard</a><a href="/control">Control</a><a href="/settings">Settings</a><a href="/calibration">Calibration</a></nav>
+<nav><a href="/">Dashboard</a><a href="/control">Control</a><a href="/settings">Settings</a><a href="/calibration">Calibration</a><button id="theme-btn" onclick="(()=>{const h=document.documentElement,t=h.getAttribute('data-theme')==='dark'?'light':'dark';h.setAttribute('data-theme',t);localStorage.setItem('theme',t);document.getElementById('theme-btn').textContent=t==='dark'?'☀️':'🌙';})()">☀️</button></nav>
 </header><main>
 )HTML";
 

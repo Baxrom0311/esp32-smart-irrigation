@@ -4,11 +4,10 @@
 //   1. Serial + NVS / settings
 //   2. Sensors (ADC + DHT)
 //   3. Relays (driven OFF before pinMode)
-//   4. Display (TFT)
-//   5. WiFi AP + AsyncWebServer
-//   6. Task watchdog (30 s)
+//   4. WiFi AP + AsyncWebServer
+//   5. Task watchdog (30 s)
 //
-// loop() is single-threaded for sensors/relays/display. Async HTTP
+// loop() is single-threaded for sensors/relays. Async HTTP
 // runs on its own task. Each tick is non-blocking; we feed the
 // watchdog every iteration.
 
@@ -20,7 +19,7 @@
 #include "storage.h"
 #include "sensors.h"
 #include "relays.h"
-#include "display.h"
+
 #include "webserver.h"
 #include "server.h"
 
@@ -69,7 +68,6 @@ void setup() {
 
     sensorsBegin(g_state);
     relaysBegin(g_state);
-    displayBegin(g_state);
     webserverBegin(g_state);
     serverBegin(g_state);
 
@@ -88,7 +86,6 @@ void loop() {
     sensorsTick(g_state);
     serverTick(g_state);
     relaysTick(g_state);
-    displayTick(g_state);
     webserverTick(g_state);
 
     // Bump the loop-tick counter so /api/metrics can surface main-

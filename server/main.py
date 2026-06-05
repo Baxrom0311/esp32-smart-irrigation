@@ -38,7 +38,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 load_dotenv()
@@ -196,6 +196,29 @@ async def _load_overrides_from_db() -> None:
             pump_overrides[pump] = mode
 
 
+async def _hydrate_latest_from_db() -> None:
+    """Load last sensor row from DB so dashboard shows data after restart."""
+    global latest_data, last_report_time
+    db = await _get_db()
+    async with db.execute(
+        "SELECT ts, soil1, soil2, tank1, tank2, temp, hum, "
+        "tank1_err, tank2_err, soil1_err, soil2_err, pump1, pump2 "
+        "FROM sensor_history ORDER BY id DESC LIMIT 1"
+    ) as cur:
+        row = await cur.fetchone()
+    if row:
+        last_report_time = float(row["ts"])
+        latest_data = {
+            "soil1": row["soil1"], "soil2": row["soil2"],
+            "tank1": row["tank1"], "tank2": row["tank2"],
+            "temp": row["temp"], "hum": row["hum"],
+            "tank1_err": bool(row["tank1_err"]), "tank2_err": bool(row["tank2_err"]),
+            "soil1_err": bool(row["soil1_err"]), "soil2_err": bool(row["soil2_err"]),
+            "pump1": bool(row["pump1"]), "pump2": bool(row["pump2"]),
+        }
+        print(f"[db] hydrated latest_data from ts={last_report_time:.0f}")
+
+
 async def _save_override_to_db(pump: int, mode: str) -> None:
     db = await _get_db()
     await db.execute(
@@ -317,6 +340,8 @@ async def lifespan(app: FastAPI):  # noqa: ARG001
     await _init_db()
     await _load_settings_from_db()
     await _load_overrides_from_db()
+    # Hydrate latest_data from DB so dashboard shows last known values after restart.
+    await _hydrate_latest_from_db()
     # Run a cleanup pass on startup so a long-stopped server doesn't keep stale rows.
     try:
         deleted = await _cleanup_old_history()
@@ -895,6 +920,50 @@ async def healthz():
 
 
 # ---------------------------------------------------------------------------
+# PWA — manifest + service worker
+# ---------------------------------------------------------------------------
+
+@app.get("/manifest.json")
+async def pwa_manifest():
+    return JSONResponse({
+        "name": "Smart Irrigation AI",
+        "short_name": "Irrigation",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0b1220",
+        "theme_color": "#1f6feb",
+        "icons": [
+            {"src": "/icon-192.svg", "sizes": "192x192", "type": "image/svg+xml"},
+            {"src": "/icon-512.svg", "sizes": "512x512", "type": "image/svg+xml"},
+        ],
+    }, media_type="application/manifest+json")
+
+
+_SW_JS = """\
+const CACHE='irrigation-v1';
+const PRECACHE=['/'];
+self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(PRECACHE)).then(()=>self.skipWaiting()))});
+self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
+self.addEventListener('fetch',e=>{const r=e.request;if(r.method!=='GET')return;if(r.url.includes('/api/'))return;e.respondWith(fetch(r).then(resp=>{if(resp.ok){const cl=resp.clone();caches.open(CACHE).then(c=>c.put(r,cl))}return resp}).catch(()=>caches.match(r)))});
+"""
+
+
+@app.get("/sw.js")
+async def service_worker():
+    return Response(_SW_JS, media_type="application/javascript",
+                    headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
+
+
+_ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="20" fill="#1f6feb"/><text x="50" y="68" font-size="52" text-anchor="middle" fill="#fff">🌱</text></svg>'
+
+
+@app.get("/icon-192.svg")
+@app.get("/icon-512.svg")
+async def pwa_icon():
+    return Response(_ICON_SVG, media_type="image/svg+xml")
+
+
+# ---------------------------------------------------------------------------
 # Web dashboard
 # ---------------------------------------------------------------------------
 
@@ -908,6 +977,12 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#1f6feb">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon-192.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.svg">
 <title>🌱 Smart Irrigation AI</title>
 <style>
 :root{
@@ -922,6 +997,19 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   --warn:#fdba74;
   --err:#ff6b6b;
   --accent:#1f6feb;
+}
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:#f4f6f8;
+  --card:#fff;
+  --card2:#f0f2f5;
+  --line:#dde1e6;
+  --txt:#1a1a2e;
+  --muted:#5a6a7a;
+  --ok:#2ba87a;
+  --warn:#c77800;
+  --err:#d32f2f;
+  --accent:#1a6dd4;
 }
 *{box-sizing:border-box}
 html,body{margin:0;padding:0}
@@ -998,7 +1086,7 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   background:var(--card);color:var(--txt);cursor:pointer;font-size:13px;
   transition:background .15s, border-color .15s;
 }
-.btn:hover{background:#1a2a44}
+.btn:hover{background:var(--line)}
 .btn.active{background:var(--accent);border-color:var(--accent)}
 .btn.on.active{background:var(--ok);border-color:var(--ok);color:#0b1220}
 .btn.off.active{background:var(--err);border-color:var(--err);color:#fff}
@@ -1064,6 +1152,7 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   #chart-wrap{height:240px}
 }
 </style>
+<script>((d)=>{const t=localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');d.documentElement.setAttribute('data-theme',t);})(document);</script>
 </head>
 <body>
 <header>
@@ -1074,6 +1163,7 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
       <button type="button" class="lang-btn" data-lang="ru" onclick="setLang('ru')">RU</button>
       <button type="button" class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
     </div>
+    <button type="button" id="theme-btn" class="refresh-btn" onclick="toggleTheme()" title="Theme">☀️</button>
     <span id="conn" class="pill"><span class="dot"></span><span id="conn-text">…</span></span>
   </div>
 </header>
@@ -1167,6 +1257,9 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
 <div id="toast" class="toast"></div>
 
 <script>
+// ---------- theme ----------
+function toggleTheme(){const h=document.documentElement,t=h.getAttribute('data-theme')==='dark'?'light':'dark';h.setAttribute('data-theme',t);localStorage.setItem('theme',t);document.getElementById('theme-btn').textContent=t==='dark'?'☀️':'🌙';}
+document.addEventListener('DOMContentLoaded',()=>{const b=document.getElementById('theme-btn');if(b)b.textContent=(document.documentElement.getAttribute('data-theme')==='dark')?'☀️':'🌙';});
 // ---------- i18n ----------
 const T = {
   uz: {
@@ -1948,6 +2041,7 @@ setInterval(poll, 3000);
 setInterval(refreshChart, 15000);
 setInterval(updateLastUpdated, 5000);
 </script>
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');</script>
 </body>
 </html>
 """
