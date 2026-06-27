@@ -75,6 +75,23 @@ settings: dict[str, Any] = {
     "max_pump_minutes": 30,
 }
 
+field_map: dict[str, Any] = {
+    "scale_m_per_unit": 1.0,
+    "water_depth_mm": 8.0,
+    "field": [
+        {"x": 160, "y": 120},
+        {"x": 820, "y": 120},
+        {"x": 760, "y": 520},
+        {"x": 210, "y": 560},
+    ],
+    "sensors": {
+        "soil1": {"x": 360, "y": 310},
+        "soil2": {"x": 620, "y": 330},
+        "tank1": {"x": 250, "y": 170},
+        "tank2": {"x": 730, "y": 170},
+    },
+}
+
 # pump_overrides[i] in {"auto", "on", "off"} — auto means AI decides.
 # Loaded from / saved to the `overrides` table at runtime.
 pump_overrides: dict[int, str] = {1: "auto", 2: "auto"}
@@ -162,12 +179,17 @@ async def _init_db() -> None:
 
 async def _load_settings_from_db() -> None:
     """Populate the in-memory `settings` dict from the DB."""
+    global field_map
     db = await _get_db()
     async with db.execute("SELECT key, value FROM settings") as cur:
         rows = await cur.fetchall()
     for row in rows:
         try:
-            settings[row["key"]] = json.loads(row["value"])
+            value = json.loads(row["value"])
+            if row["key"] == "field_map" and isinstance(value, dict):
+                field_map = value
+            elif row["key"] in settings:
+                settings[row["key"]] = value
         except (json.JSONDecodeError, TypeError) as exc:
             print(f"[db] invalid settings row {row['key']!r}: {exc}")
 
@@ -709,6 +731,100 @@ async def post_settings(body: SettingsRequest):
     return {"ok": True, "settings": settings}
 
 
+def _clean_point(item: Any) -> dict[str, float] | None:
+    if not isinstance(item, dict):
+        return None
+    if "lat" in item and "lng" in item:
+        try:
+            lat = float(item.get("lat"))
+            lng = float(item.get("lng"))
+        except (TypeError, ValueError):
+            return None
+        if not (-85 <= lat <= 85 and -180 <= lng <= 180):
+            return None
+        return {"lat": round(lat, 7), "lng": round(lng, 7)}
+    try:
+        x = float(item.get("x"))
+        y = float(item.get("y"))
+    except (TypeError, ValueError):
+        return None
+    if not (0 <= x <= 1000 and 0 <= y <= 650):
+        return None
+    return {"x": round(x, 2), "y": round(y, 2)}
+
+
+def _sanitize_field_map(payload: dict[str, Any]) -> dict[str, Any]:
+    current = json.loads(json.dumps(field_map))
+    if "scale_m_per_unit" in payload:
+        try:
+            scale = float(payload["scale_m_per_unit"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="scale_m_per_unit must be numeric")
+        if not (0.05 <= scale <= 1000):
+            raise HTTPException(status_code=400, detail="scale_m_per_unit out of range")
+        current["scale_m_per_unit"] = round(scale, 4)
+    if "water_depth_mm" in payload:
+        try:
+            depth = float(payload["water_depth_mm"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="water_depth_mm must be numeric")
+        if not (0.1 <= depth <= 100):
+            raise HTTPException(status_code=400, detail="water_depth_mm out of range")
+        current["water_depth_mm"] = round(depth, 2)
+    if "field" in payload:
+        raw_points = payload["field"]
+        if not isinstance(raw_points, list) or len(raw_points) < 3 or len(raw_points) > 24:
+            raise HTTPException(status_code=400, detail="field must contain 3..24 points")
+        points = [_clean_point(p) for p in raw_points]
+        if any(p is None for p in points):
+            raise HTTPException(status_code=400, detail="field contains invalid point")
+        current["field"] = points
+    if "sensors" in payload:
+        raw_sensors = payload["sensors"]
+        if not isinstance(raw_sensors, dict):
+            raise HTTPException(status_code=400, detail="sensors must be an object")
+        sensors = dict(current.get("sensors", {}))
+        for key in ("soil1", "soil2", "tank1", "tank2"):
+            if key in raw_sensors:
+                point = _clean_point(raw_sensors[key])
+                if point is None:
+                    raise HTTPException(status_code=400, detail=f"{key} sensor point is invalid")
+                sensors[key] = point
+        current["sensors"] = sensors
+    return current
+
+
+@app.get("/api/field-map")
+async def get_field_map():
+    age = time.time() - last_report_time if last_report_time else None
+    return {
+        "field_map": field_map,
+        "data": latest_data,
+        "decision": last_decision,
+        "settings": settings,
+        "online": age is not None and age < ONLINE_WINDOW_SECONDS,
+        "age_seconds": round(age, 1) if age is not None else None,
+    }
+
+
+@app.post("/api/field-map")
+async def post_field_map(request: Request):
+    global field_map
+    try:
+        payload = await request.json()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"invalid json: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="body must be an object")
+    next_map = _sanitize_field_map(payload)
+    field_map = next_map
+    try:
+        await _save_settings_to_db({"field_map": field_map})
+    except Exception as exc:  # noqa: BLE001
+        print(f"[db] save field_map failed: {exc}")
+    return {"ok": True, "field_map": field_map}
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — AI chat
 # ---------------------------------------------------------------------------
@@ -959,6 +1075,7 @@ _ICON_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect
 
 @app.get("/icon-192.svg")
 @app.get("/icon-512.svg")
+@app.get("/favicon.ico")
 async def pwa_icon():
     return Response(_ICON_SVG, media_type="image/svg+xml")
 
@@ -970,6 +1087,11 @@ async def pwa_icon():
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return DASHBOARD_HTML
+
+
+@app.get("/field-map", response_class=HTMLResponse)
+async def field_map_page():
+    return FIELD_MAP_HTML
 
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -1032,6 +1154,11 @@ header{
 }
 header h1{margin:0;font-size:18px;font-weight:600}
 .header-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.nav-link{
+  color:var(--txt);text-decoration:none;border:1px solid var(--line);background:var(--card2);
+  border-radius:8px;padding:5px 10px;font-size:12px;font-weight:700;
+}
+.nav-link:hover{border-color:var(--accent)}
 .lang-switch{display:flex;gap:4px}
 .lang-btn{
   background:var(--card2);border:1px solid var(--line);color:var(--muted);
@@ -1057,6 +1184,35 @@ main{padding:18px;max-width:1200px;margin:0 auto;display:grid;gap:18px}
 section{background:var(--card);border-radius:14px;padding:16px;border:1px solid var(--line)}
 section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:600}
 .row{display:grid;gap:12px}
+.overview{
+  display:grid;grid-template-columns:1.2fr repeat(3,minmax(150px,.65fr));gap:12px;
+}
+.summary-card{
+  background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;
+  min-height:112px;display:flex;flex-direction:column;justify-content:space-between;
+}
+.summary-card.primary{background:var(--card2)}
+.summary-label{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.summary-value{font-size:26px;font-weight:700;line-height:1.1;margin-top:6px}
+.summary-value.small{font-size:18px}
+.summary-note{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.35}
+.zone-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.zone-card{
+  background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:14px;
+  display:grid;gap:12px;min-width:0;
+}
+.zone-head{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.zone-title{font-weight:700;font-size:16px}
+.zone-status{font-size:12px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;color:var(--muted);white-space:nowrap}
+.zone-status.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+.zone-status.warn{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,var(--line))}
+.zone-status.err{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,var(--line))}
+.zone-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.metric-tile{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px;min-width:0}
+.metric-tile .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.metric-tile .v{font-size:21px;font-weight:700;margin-top:4px}
+.zone-note{font-size:13px;color:var(--muted);line-height:1.4;min-height:36px}
+.zone-note strong{color:var(--txt)}
 .cards{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
 .card{
   background:var(--card2);border-radius:10px;padding:14px;
@@ -1096,8 +1252,19 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   font-size:13px;
 }
 .statusbar .item{display:flex;align-items:center;gap:6px}
+.section-head{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.section-head h2{margin:0}
+.chart-stats{display:flex;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.chart-stat{border:1px solid var(--line);background:var(--card2);border-radius:999px;padding:4px 9px}
 #chart-wrap{position:relative;width:100%;height:300px}
 #chart{width:100%;height:100%;display:block}
+.chart-tip{
+  position:absolute;display:none;pointer-events:none;background:var(--card);
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;
+  box-shadow:0 8px 24px rgba(0,0,0,.25);min-width:150px;z-index:2;
+}
+.chart-tip .tip-row{display:flex;justify-content:space-between;gap:14px;white-space:nowrap}
+.chart-tip .tip-name{color:var(--muted)}
 .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;font-size:12px;color:var(--muted)}
 .legend .lg-item{
   display:inline-flex;align-items:center;gap:6px;
@@ -1151,6 +1318,11 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   section{padding:12px}
   #chart-wrap{height:240px}
 }
+@media (max-width:850px){
+  .overview{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .summary-card.primary{grid-column:1/-1}
+  .zone-grid{grid-template-columns:1fr}
+}
 </style>
 <script>((d)=>{const t=localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme:light)').matches?'light':'dark');d.documentElement.setAttribute('data-theme',t);})(document);</script>
 </head>
@@ -1158,6 +1330,7 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
 <header>
   <h1>🌱 Smart Irrigation AI</h1>
   <div class="header-right">
+    <a class="nav-link" href="/field-map">Map</a>
     <div class="lang-switch">
       <button type="button" class="lang-btn" data-lang="uz" onclick="setLang('uz')">UZ</button>
       <button type="button" class="lang-btn" data-lang="ru" onclick="setLang('ru')">RU</button>
@@ -1169,12 +1342,62 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
 </header>
 
 <main>
-  <div class="statusbar">
-    <div class="item"><strong data-i18n="device">Qurilma:</strong> <span id="device-state" class="muted">—</span></div>
-    <div class="item"><strong data-i18n="last_seen">Oxirgi aloqa:</strong> <span id="last-seen" class="muted">—</span> <button id="refresh-btn" type="button" class="refresh-btn" onclick="forceRefresh()" title="Refresh">🔄</button></div>
-    <div class="item"><strong data-i18n="ai_label">AI:</strong> <span id="ai-state" class="muted">—</span></div>
-    <div class="item"><strong data-i18n="decision_label">Qaror:</strong> <span id="decision-source" class="muted">—</span></div>
+  <div class="overview">
+    <div class="summary-card primary">
+      <div>
+        <div class="summary-label" data-i18n="current_decision">Joriy qaror</div>
+        <div id="decision-main" class="summary-value">—</div>
+      </div>
+      <div id="decision-reason" class="summary-note">—</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label" data-i18n="device">Qurilma:</div>
+      <div id="device-state" class="summary-value small muted">—</div>
+      <div class="summary-note"><span data-i18n="last_seen">Oxirgi aloqa:</span> <span id="last-seen">—</span> <button id="refresh-btn" type="button" class="refresh-btn" onclick="forceRefresh()" title="Refresh">🔄</button></div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label" data-i18n="decision_label">Qaror:</div>
+      <div id="decision-source" class="summary-value small muted">—</div>
+      <div class="summary-note"><span data-i18n="ai_label">AI:</span> <span id="ai-state">—</span></div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label" data-i18n="system_health">Tizim holati</div>
+      <div id="system-health" class="summary-value small muted">—</div>
+      <div id="system-health-note" class="summary-note">—</div>
+    </div>
   </div>
+
+  <section>
+    <h2 data-i18n="zone_overview">Zonalar holati</h2>
+    <div class="zone-grid">
+      <div class="zone-card" id="zone1-card">
+        <div class="zone-head">
+          <div><div class="zone-title"><span data-i18n="zone1">Zona 1</span></div><div class="muted" style="font-size:12px" data-i18n="pump1_name">Nasos 1</div></div>
+          <div id="zone1-status" class="zone-status">—</div>
+        </div>
+        <div class="zone-metrics">
+          <div class="metric-tile"><div class="k">Soil</div><div class="v"><span id="z1-soil">--</span>%</div></div>
+          <div class="metric-tile"><div class="k">Tank</div><div class="v"><span id="z1-tank">--</span>%</div></div>
+          <div class="metric-tile"><div class="k">Pump</div><div class="v" id="z1-pump">--</div></div>
+        </div>
+        <div class="zone-note"><strong data-i18n="lockout_reason">Sabab:</strong> <span id="z1-lockout">—</span></div>
+        <div class="zone-note"><strong data-i18n="recommendation">Tavsiya:</strong> <span id="z1-rec">—</span></div>
+      </div>
+      <div class="zone-card" id="zone2-card">
+        <div class="zone-head">
+          <div><div class="zone-title"><span data-i18n="zone2">Zona 2</span></div><div class="muted" style="font-size:12px" data-i18n="pump2_name">Nasos 2</div></div>
+          <div id="zone2-status" class="zone-status">—</div>
+        </div>
+        <div class="zone-metrics">
+          <div class="metric-tile"><div class="k">Soil</div><div class="v"><span id="z2-soil">--</span>%</div></div>
+          <div class="metric-tile"><div class="k">Tank</div><div class="v"><span id="z2-tank">--</span>%</div></div>
+          <div class="metric-tile"><div class="k">Pump</div><div class="v" id="z2-pump">--</div></div>
+        </div>
+        <div class="zone-note"><strong data-i18n="lockout_reason">Sabab:</strong> <span id="z2-lockout">—</span></div>
+        <div class="zone-note"><strong data-i18n="recommendation">Tavsiya:</strong> <span id="z2-rec">—</span></div>
+      </div>
+    </div>
+  </section>
 
   <section>
     <h2 data-i18n="sensors_title">Sensorlar</h2>
@@ -1219,9 +1442,13 @@ section h2{margin:0 0 12px;font-size:14px;color:var(--muted);text-transform:uppe
   </section>
 
   <section>
-    <h2 data-i18n="history_title">Tarix (oxirgi 100 yozuv)</h2>
+    <div class="section-head">
+      <h2 data-i18n="history_title">Tarix (oxirgi 100 yozuv)</h2>
+      <div class="chart-stats" id="chart-stats"></div>
+    </div>
     <div id="chart-wrap">
       <svg id="chart" viewBox="0 0 800 300" preserveAspectRatio="none"></svg>
+      <div id="chart-tip" class="chart-tip"></div>
     </div>
     <div class="legend" id="legend"></div>
     <div class="last-updated"><span data-i18n="last_updated_label">Oxirgi yangilanish:</span> <span id="last-updated-ts">—</span></div>
@@ -1271,6 +1498,27 @@ const T = {
     last_seen: 'Oxirgi aloqa:',
     ai_label: 'AI:',
     decision_label: 'Qaror:',
+    current_decision: 'Joriy qaror',
+    system_health: 'Tizim holati',
+    zone_overview: 'Zonalar holati',
+    lockout_reason: 'Sabab:',
+    recommendation: 'Tavsiya:',
+    no_lockout: "blok yo'q",
+    status_ok: 'normal',
+    status_warn: 'diqqat',
+    status_critical: 'kritik',
+    health_ok_note: 'Barcha asosiy ko‘rsatkichlar me’yorda',
+    health_warn_note: 'Kamida bitta zona e’tibor talab qiladi',
+    health_offline_note: 'Qurilmadan yangi ma’lumot kelmayapti',
+    tank_low_lockout: 'tank suvi past',
+    sensor_lockout: 'sensor xatosi',
+    soil_dry: 'tuproq quruq',
+    runtime_wait: 'nasos holati tekshirilmoqda',
+    rec_wait_data: "ma'lumot kutilmoqda",
+    rec_fill_tank: "avval tankni to'ldiring",
+    rec_check_sensor: 'sensor ulanishi yoki kalibrovkasini tekshiring',
+    rec_water_needed: "sug'orish kerak, safety ruxsat bersa nasos yoqiladi",
+    rec_stable: 'hozircha aralashuv kerak emas',
     unknown: "noma'lum",
     ai_on: 'yoniq',
     ai_off: "o'chiq",
@@ -1340,6 +1588,27 @@ const T = {
     last_seen: 'Последняя связь:',
     ai_label: 'AI:',
     decision_label: 'Решение:',
+    current_decision: 'Текущее решение',
+    system_health: 'Состояние системы',
+    zone_overview: 'Состояние зон',
+    lockout_reason: 'Причина:',
+    recommendation: 'Рекомендация:',
+    no_lockout: 'блокировки нет',
+    status_ok: 'норма',
+    status_warn: 'внимание',
+    status_critical: 'критично',
+    health_ok_note: 'Основные показатели в норме',
+    health_warn_note: 'Минимум одна зона требует внимания',
+    health_offline_note: 'Нет свежих данных от устройства',
+    tank_low_lockout: 'низкий уровень воды в баке',
+    sensor_lockout: 'ошибка датчика',
+    soil_dry: 'почва сухая',
+    runtime_wait: 'проверка состояния насоса',
+    rec_wait_data: 'ожидание данных',
+    rec_fill_tank: 'сначала наполните бак',
+    rec_check_sensor: 'проверьте подключение или калибровку датчика',
+    rec_water_needed: 'нужен полив, насос включится если safety разрешит',
+    rec_stable: 'сейчас вмешательство не требуется',
     unknown: 'неизвестно',
     ai_on: 'включён',
     ai_off: 'выключен',
@@ -1409,6 +1678,27 @@ const T = {
     last_seen: 'Last seen:',
     ai_label: 'AI:',
     decision_label: 'Decision:',
+    current_decision: 'Current decision',
+    system_health: 'System health',
+    zone_overview: 'Zone overview',
+    lockout_reason: 'Reason:',
+    recommendation: 'Recommendation:',
+    no_lockout: 'no lockout',
+    status_ok: 'normal',
+    status_warn: 'attention',
+    status_critical: 'critical',
+    health_ok_note: 'Core readings are within range',
+    health_warn_note: 'At least one zone needs attention',
+    health_offline_note: 'No fresh device report is available',
+    tank_low_lockout: 'tank water is low',
+    sensor_lockout: 'sensor error',
+    soil_dry: 'soil is dry',
+    runtime_wait: 'checking pump state',
+    rec_wait_data: 'waiting for data',
+    rec_fill_tank: 'fill the tank first',
+    rec_check_sensor: 'check sensor wiring or calibration',
+    rec_water_needed: 'watering is needed; pump will run if safety allows',
+    rec_stable: 'no action needed right now',
     unknown: 'unknown',
     ai_on: 'on',
     ai_off: 'off',
@@ -1509,6 +1799,7 @@ function applyLang(){
   if (refresh) refresh.title = tr('refresh_title');
   applyDynamicLabels();
   renderLegend();
+  renderChartStats(lastChartPts);
   if (lastChartPts) drawChart(lastChartPts);
   updateLastUpdated();
 }
@@ -1575,6 +1866,83 @@ function translatePumpReason(reason){
   return out;
 }
 
+function valOrDash(v, decimals){
+  if (v == null || v === undefined || Number.isNaN(Number(v))) return '--';
+  return decimals == null ? String(v) : Number(v).toFixed(decimals);
+}
+
+function pumpDecisionText(dec){
+  if (!dec || dec.source === 'init') return '—';
+  const p1 = dec.pump1 ? tr('state_on') : tr('state_off');
+  const p2 = dec.pump2 ? tr('state_on') : tr('state_off');
+  return tr('pump1_name') + ' ' + p1 + ' · ' + tr('pump2_name') + ' ' + p2;
+}
+
+function zoneDiagnosis(num, data, decision, online){
+  const settings = lastSettings || {};
+  const soil = num === 1 ? data.soil1 : data.soil2;
+  const tank = num === 1 ? data.tank1 : data.tank2;
+  const soilErr = !!(num === 1 ? data.soil1_err : data.soil2_err);
+  const tankErr = !!(num === 1 ? data.tank1_err : data.tank2_err);
+  const pumpOn = !!(decision && decision['pump' + num]);
+  const soilLow = settings.soil_low ?? 35;
+  const tankMin = settings.tank_min ?? 20;
+
+  if (!online) {
+    return {level:'err', status:tr('conn_offline'), lockout:tr('reason_no_data'), rec:tr('rec_wait_data')};
+  }
+  if (soilErr || tankErr) {
+    return {level:'err', status:tr('status_critical'), lockout:tr('sensor_lockout'), rec:tr('rec_check_sensor')};
+  }
+  if (tank != null && tank < tankMin) {
+    return {level:'err', status:tr('status_critical'), lockout:tr('tank_low_lockout'), rec:tr('rec_fill_tank')};
+  }
+  if (soil != null && soil < soilLow) {
+    return {
+      level:'warn',
+      status:tr('status_warn'),
+      lockout:pumpOn ? tr('no_lockout') : tr('soil_dry'),
+      rec:pumpOn ? tr('runtime_wait') : tr('rec_water_needed')
+    };
+  }
+  return {level:'ok', status:tr('status_ok'), lockout:tr('no_lockout'), rec:tr('rec_stable')};
+}
+
+function renderZone(num, data, decision, online){
+  const z = zoneDiagnosis(num, data, decision, online);
+  const soil = num === 1 ? data.soil1 : data.soil2;
+  const tank = num === 1 ? data.tank1 : data.tank2;
+  const pumpOn = !!(decision && decision['pump' + num]);
+  $('z'+num+'-soil').textContent = valOrDash(soil);
+  $('z'+num+'-tank').textContent = valOrDash(tank);
+  const pumpEl = $('z'+num+'-pump');
+  pumpEl.textContent = pumpOn ? tr('state_on') : tr('state_off');
+  pumpEl.className = 'v ' + (pumpOn ? 'ok' : 'muted');
+  const st = $('zone'+num+'-status');
+  st.textContent = z.status;
+  st.className = 'zone-status ' + z.level;
+  $('z'+num+'-lockout').textContent = z.lockout;
+  $('z'+num+'-rec').textContent = z.rec;
+  return z;
+}
+
+function renderOverview(d){
+  const data = d.data || {};
+  const dec = d.decision || {};
+  const online = !!d.online;
+  const z1 = renderZone(1, data, dec, online);
+  const z2 = renderZone(2, data, dec, online);
+  $('decision-main').textContent = pumpDecisionText(dec);
+  $('decision-reason').textContent = translatePumpReason(dec.reason);
+  let level = 'ok';
+  if (!online || z1.level === 'err' || z2.level === 'err') level = 'err';
+  else if (z1.level === 'warn' || z2.level === 'warn') level = 'warn';
+  const healthText = level === 'err' ? tr('status_critical') : (level === 'warn' ? tr('status_warn') : tr('status_ok'));
+  $('system-health').textContent = healthText;
+  $('system-health').className = 'summary-value small ' + (level === 'err' ? 'err' : level === 'warn' ? 'warn' : 'ok');
+  $('system-health-note').textContent = !online ? tr('health_offline_note') : (level === 'ok' ? tr('health_ok_note') : tr('health_warn_note'));
+}
+
 // Re-apply translations on dynamic spans (called on language switch + on poll).
 function applyDynamicLabels(){
   if (!lastStatus) return;
@@ -1588,6 +1956,9 @@ function applyDynamicLabels(){
   const ovr = d.overrides || {'1':'auto','2':'auto'};
   const srcMap = {ai: tr('src_ai'), rules: tr('src_rules'), init: '—'};
   $('decision-source').textContent = srcMap[dec.source] || dec.source || '—';
+  $('decision-main').textContent = pumpDecisionText(dec);
+  $('decision-reason').textContent = translatePumpReason(dec.reason);
+  renderOverview(d);
   ['1','2'].forEach(num => {
     const on = !!dec['pump'+num];
     const stateEl = $('p'+num+'-state');
@@ -1642,6 +2013,49 @@ function renderLegend(){
   });
 }
 
+function renderChartStats(pts){
+  const el = $('chart-stats');
+  if (!el) return;
+  if (!pts || !pts.length){
+    el.innerHTML = '<span class="chart-stat">' + tr('waiting_data') + '</span>';
+    return;
+  }
+  const latest = pts[pts.length - 1] || {};
+  const stat = (label, key, color) => {
+    const v = latest[key];
+    return '<span class="chart-stat"><span style="color:' + color + '">' + label + '</span> ' + valOrDash(v) + '%</span>';
+  };
+  el.innerHTML =
+    stat('Soil 1', 'soil1', '#3ad29f') +
+    stat('Soil 2', 'soil2', '#5ac8fa') +
+    stat('Tank 1', 'tank1', '#fdba74') +
+    stat('Tank 2', 'tank2', '#c084fc');
+}
+
+function attachChartTooltip(pts){
+  const wrap = $('chart-wrap');
+  const tip = $('chart-tip');
+  if (!wrap || !tip || !pts || !pts.length) return;
+  wrap.onmouseleave = () => { tip.style.display = 'none'; };
+  wrap.onmousemove = (ev) => {
+    const rect = wrap.getBoundingClientRect();
+    const x = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+    const idx = Math.max(0, Math.min(pts.length - 1, Math.round((x / rect.width) * (pts.length - 1))));
+    const p = pts[idx] || {};
+    const age = p.ts ? fmtAge((Date.now()/1000) - p.ts) : '—';
+    let html = '<div class="tip-row"><span class="tip-name">' + age + '</span></div>';
+    SERIES.forEach(s => {
+      if (hiddenSeries.has(s.key)) return;
+      html += '<div class="tip-row"><span class="tip-name" style="color:' + s.color + '">' + s.name + '</span><strong>' + valOrDash(p[s.key]) + '%</strong></div>';
+    });
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+    const left = Math.min(rect.width - 170, Math.max(8, x + 12));
+    tip.style.left = left + 'px';
+    tip.style.top = '12px';
+  };
+}
+
 // ---------- status polling ----------
 async function poll(){
   try{
@@ -1660,6 +2074,7 @@ async function poll(){
     $('last-seen').textContent = fmtAge(d.age_seconds);
     $('ai-state').textContent = d.ai_enabled ? tr('ai_on') : tr('ai_off');
     $('ai-state').className = d.ai_enabled ? 'ok' : 'warn';
+    renderOverview(d);
 
     // sensor cards
     const s = d.data || {};
@@ -1728,6 +2143,8 @@ async function refreshChart(){
     lastChartUpdate = Date.now() / 1000;
     drawChart(pts);
     renderLegend();
+    renderChartStats(pts);
+    attachChartTooltip(pts);
     updateLastUpdated();
   } catch(e){ /* ignore */ }
 }
@@ -1793,6 +2210,25 @@ function drawChart(pts){
     });
     lbl.textContent = (100 - i * 25) + '%';
     svg.appendChild(lbl);
+  }
+
+  const thresholdLine = (pct, label, color) => {
+    if (pct == null || isNaN(pct)) return;
+    const y = padT + (1 - Math.max(0, Math.min(100, pct)) / 100) * innerH;
+    svg.appendChild(svgEl('line', {
+      x1: padL, x2: W - padR, y1: y, y2: y,
+      stroke: color, 'stroke-width':'1.2', 'stroke-dasharray':'7,5', opacity:'.75',
+    }));
+    const txt = svgEl('text', {
+      x: W - padR - 4, y: y - 4,
+      fill: color, 'font-size':'10', 'text-anchor':'end',
+    });
+    txt.textContent = label + ' ' + pct + '%';
+    svg.appendChild(txt);
+  };
+  if (lastSettings){
+    thresholdLine(lastSettings.soil_low, 'soil low', '#ff6b6b');
+    thresholdLine(lastSettings.tank_min, 'tank min', '#fdba74');
   }
 
   if (!pts || pts.length < 2){
@@ -2042,6 +2478,211 @@ setInterval(refreshChart, 15000);
 setInterval(updateLastUpdated, 5000);
 </script>
 <script>if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js');</script>
+</body>
+</html>
+"""
+
+
+FIELD_MAP_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Field Map · Smart Irrigation AI</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#111c2e;--panel2:#17243a;--line:#253653;--txt:#e6edf3;--muted:#8aa0b8;--ok:#3ad29f;--warn:#fdba74;--err:#ff6b6b;--accent:#1f6feb}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);padding:14px 20px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+h1{font-size:18px;margin:0}.nav{display:flex;gap:8px;align-items:center}.nav a,.btn{border:1px solid var(--line);background:var(--panel2);color:var(--txt);text-decoration:none;border-radius:8px;padding:8px 11px;font-size:13px;cursor:pointer}.btn.primary{background:var(--accent);border-color:var(--accent)}.btn.danger{background:#3a1c26;border-color:#743044;color:#ffd7df}
+main{max-width:1320px;margin:0 auto;padding:18px;display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:0 0 12px}.field{display:grid;gap:5px;margin-bottom:12px}.field label{font-size:12px;color:var(--muted)}.field input{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--txt);border-radius:8px;padding:9px 10px}
+.stat{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding:9px 0;font-size:14px}.stat:last-child{border-bottom:0}.stat span:first-child{color:var(--muted)}.big{font-size:24px;font-weight:750}.hint{font-size:12px;color:var(--muted);line-height:1.45}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.map-wrap{position:relative;min-height:650px;background:linear-gradient(135deg,#0f1a2b,#12243b);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+#real-map{width:100%;height:650px;background:#102033}
+#map{width:100%;height:650px;display:none;touch-action:none;background-image:linear-gradient(rgba(138,160,184,.12) 1px,transparent 1px),linear-gradient(90deg,rgba(138,160,184,.12) 1px,transparent 1px);background-size:40px 40px}
+.leaflet-container{background:#102033;color:var(--txt);font-family:inherit}.leaflet-control-attribution{font-size:10px;background:rgba(11,18,32,.72)!important;color:#9fb1c8!important}.leaflet-control-attribution a{color:#cfe1ff!important}
+.sensor-icon{width:42px;height:42px;border-radius:50%;border:2px solid #fff;display:grid;place-items:center;color:#fff;font-weight:800;box-shadow:0 8px 24px rgba(0,0,0,.38)}
+.sensor-label{background:rgba(11,18,32,.82);border:1px solid var(--line);border-radius:8px;color:#fff;padding:3px 7px;font-size:12px;white-space:nowrap}
+.field-poly{fill:rgba(58,210,159,.12);stroke:var(--ok);stroke-width:3;filter:drop-shadow(0 8px 20px rgba(0,0,0,.3))}
+.zone-line{stroke:rgba(255,255,255,.35);stroke-width:2;stroke-dasharray:8 6}.point{fill:var(--accent);stroke:#fff;stroke-width:2;cursor:grab}.sensor{cursor:grab}.sensor circle{stroke:#fff;stroke-width:2}.sensor text{font-size:14px;font-weight:700;fill:#fff;text-anchor:middle;dominant-baseline:middle;pointer-events:none}.label{font-size:13px;fill:var(--txt);paint-order:stroke;stroke:#0b1220;stroke-width:4px}
+.map-note{position:absolute;left:14px;bottom:14px;background:rgba(11,18,32,.82);border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:12px;color:var(--muted);max-width:420px}.badge{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;margin:3px 4px 3px 0;font-size:12px;color:var(--muted)}.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.err{background:var(--err)}
+.toast{position:fixed;right:18px;bottom:18px;display:none;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:13px}.toast.show{display:block}
+@media(max-width:900px){main{grid-template-columns:1fr}.map-wrap{min-height:520px}#real-map,#map{height:520px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Field Map · Smart Irrigation AI</h1>
+  <div class="nav"><a href="/">Dashboard</a><button class="btn primary" onclick="saveMap()">Save map</button></div>
+</header>
+<main>
+  <div>
+    <section>
+      <h2>Maydon sozlamalari</h2>
+      <div class="field"><label>Scale: 1 grid unit necha metr?</label><input id="scale" type="number" min="0.05" step="0.05"></div>
+      <div class="field"><label>Sug'orish chuqurligi, mm</label><input id="depth" type="number" min="0.1" max="100" step="0.5"></div>
+      <div class="stat"><span>Maydon yuzasi</span><strong id="area" class="big">—</strong></div>
+      <div class="stat"><span>Zona 1 taxminiy</span><strong id="zone1-area">—</strong></div>
+      <div class="stat"><span>Zona 2 taxminiy</span><strong id="zone2-area">—</strong></div>
+      <div class="stat"><span>Bir sug'orish suv hajmi</span><strong id="water-liters">—</strong></div>
+      <div class="toolbar">
+        <button class="btn" onclick="setMode('draw')">Draw field</button>
+        <button class="btn" onclick="setMode('move')">Move sensors</button>
+        <button class="btn" onclick="useMyLocation()">My location</button>
+        <button class="btn danger" onclick="clearField()">Clear field</button>
+      </div>
+      <p class="hint">Dalani chizish uchun xarita ustiga ketma-ket bosing. Nuqtalarni sudrab tuzating. Scale real o'lchamga bog'laydi: area = grid area × scale².</p>
+    </section>
+    <section style="margin-top:12px">
+      <h2>Sensorlar</h2>
+      <div id="sensor-readings"></div>
+      <p class="hint">Markerlarni real sensor joyiga olib boring. Dashboarddagi sensor data shu maydon ustida ko'rinadi.</p>
+    </section>
+  </div>
+  <section>
+    <h2>Interaktiv dala xaritasi</h2>
+    <div class="map-wrap">
+      <div id="real-map"></div>
+      <svg id="map" viewBox="0 0 1000 650" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="map-note" id="map-note">Mode: draw field. Satellite map: Esri World Imagery. OpenStreetMap ishlatilmaydi.</div>
+    </div>
+  </section>
+</main>
+<div id="toast" class="toast"></div>
+<script>
+const NS='http://www.w3.org/2000/svg';
+const SENSORS=[
+  {key:'soil1', label:'S1', name:'Soil 1', color:'#3ad29f'},
+  {key:'soil2', label:'S2', name:'Soil 2', color:'#5ac8fa'},
+  {key:'tank1', label:'T1', name:'Tank 1', color:'#fdba74'},
+  {key:'tank2', label:'T2', name:'Tank 2', color:'#c084fc'},
+];
+let mode='draw', fmap=null, live=null, drag=null, leafletMap=null, fieldLayer=null, pointLayer=null, sensorLayer=null;
+const $=id=>document.getElementById(id);
+function el(n,a){const x=document.createElementNS(NS,n); if(a)for(const k in a)x.setAttribute(k,a[k]); return x}
+function toast(t){const e=$('toast');e.textContent=t;e.className='toast show';clearTimeout(toast.t);toast.t=setTimeout(()=>e.className='toast',2200)}
+function setMode(m){mode=m;$('map-note').textContent='Mode: '+(m==='draw'?'draw field points':'move sensor markers')+'. Satellite map: Esri World Imagery. OpenStreetMap ishlatilmaydi.'; if(fmap)render()}
+function svgPoint(evt){const svg=$('map'), p=svg.createSVGPoint();p.x=evt.clientX;p.y=evt.clientY;const r=p.matrixTransform(svg.getScreenCTM().inverse());return {x:Math.max(0,Math.min(1000,r.x)),y:Math.max(0,Math.min(650,r.y))}}
+function areaGrid(points){let s=0;for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];s+=a.x*b.y-b.x*a.y}return Math.abs(s)/2}
+function hasGeo(points){return Array.isArray(points)&&points.length&&points.every(p=>p&&typeof p.lat==='number'&&typeof p.lng==='number')}
+function merc(p){const r=6378137, d=Math.PI/180;return {x:r*p.lng*d,y:r*Math.log(Math.tan(Math.PI/4+p.lat*d/2))}}
+function areaGeo(points){if(!hasGeo(points))return NaN;const m=points.map(merc);let s=0;for(let i=0;i<m.length;i++){const a=m[i],b=m[(i+1)%m.length];s+=a.x*b.y-b.x*a.y}return Math.abs(s)/2}
+function defaultGeo(center){
+  const lat=center?.lat??41.3111,lng=center?.lng??69.2797,d=.0018;
+  fmap.field=[{lat:lat+d,lng:lng-d},{lat:lat+d,lng:lng+d},{lat:lat-d,lng:lng+d},{lat:lat-d,lng:lng-d}];
+  fmap.sensors={soil1:{lat:lat+.00035,lng:lng-.00045},soil2:{lat:lat-.0003,lng:lng+.00045},tank1:{lat:lat+.0007,lng:lng-.0009},tank2:{lat:lat+.0007,lng:lng+.0009}};
+}
+function ensureGeoDefaults(){if(!hasGeo(fmap.field))defaultGeo()}
+function fmt(n,u){return Number.isFinite(n)?n.toLocaleString(undefined,{maximumFractionDigits:1})+u:'—'}
+function recalc(){
+  const pts=fmap.field||[], scale=Number($('scale').value)||1, depth=Number($('depth').value)||8;
+  fmap.scale_m_per_unit=scale; fmap.water_depth_mm=depth;
+  const m2=hasGeo(pts)?areaGeo(pts):areaGrid(pts)*scale*scale;
+  $('area').textContent=fmt(m2,' m²'); $('zone1-area').textContent=fmt(m2/2,' m²'); $('zone2-area').textContent=fmt(m2/2,' m²'); $('water-liters').textContent=fmt(m2*depth,' L');
+}
+function sensorValue(k){const d=live?.data||{};const v=d[k];return v==null?'--':v+'%'}
+function renderReadings(){
+  const d=live?.data||{}, online=!!live?.online;
+  $('sensor-readings').innerHTML=SENSORS.map(s=>{
+    let cls='ok'; if(!online)cls='err'; else if(d[s.key+'_err'])cls='err';
+    return `<span class="badge"><i class="dot ${cls}"></i>${s.name}: <strong>${sensorValue(s.key)}</strong></span>`;
+  }).join('');
+}
+function initLeaflet(){
+  if (leafletMap || !window.L) return !!leafletMap;
+  $('real-map').style.display='block'; $('map').style.display='none';
+  leafletMap=L.map('real-map',{zoomControl:true,attributionControl:true}).setView([41.3111,69.2797],16);
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    maxZoom:20, attribution:'Tiles © Esri'
+  }).addTo(leafletMap);
+  fieldLayer=L.layerGroup().addTo(leafletMap);
+  pointLayer=L.layerGroup().addTo(leafletMap);
+  sensorLayer=L.layerGroup().addTo(leafletMap);
+  leafletMap.on('click',e=>{if(mode!=='draw')return;fmap.field.push({lat:+e.latlng.lat.toFixed(7),lng:+e.latlng.lng.toFixed(7)});render()});
+  return true;
+}
+function sensorIcon(s){return L.divIcon({className:'',html:`<div class="sensor-icon" style="background:${s.color}">${s.label}</div>`,iconSize:[42,42],iconAnchor:[21,21]})}
+function renderLeaflet(){
+  ensureGeoDefaults();
+  initLeaflet();
+  fieldLayer.clearLayers(); pointLayer.clearLayers(); sensorLayer.clearLayers();
+  const pts=fmap.field||[];
+  if(pts.length){
+    const latlngs=pts.map(p=>[p.lat,p.lng]);
+    L.polygon(latlngs,{color:'#3ad29f',weight:3,fillColor:'#3ad29f',fillOpacity:.18}).addTo(fieldLayer);
+    pts.forEach((p,i)=>{
+      const icon=L.divIcon({className:'',html:'<div style="width:16px;height:16px;border-radius:50%;background:#1f6feb;border:2px solid #fff;box-shadow:0 3px 10px rgba(0,0,0,.35)"></div>',iconSize:[16,16],iconAnchor:[8,8]});
+      L.marker([p.lat,p.lng],{draggable:true,icon})
+        .on('dragend',e=>{const ll=e.target.getLatLng();fmap.field[i]={lat:+ll.lat.toFixed(7),lng:+ll.lng.toFixed(7)};renderLeaflet.didFit=true;render()})
+        .addTo(pointLayer);
+    });
+    const bounds=L.latLngBounds(latlngs);
+    if(!renderLeaflet.didFit){leafletMap.fitBounds(bounds.pad(.35));renderLeaflet.didFit=true}
+  }
+  const sensors=fmap.sensors||{};
+  SENSORS.forEach(s=>{
+    const p=sensors[s.key]; if(!p||typeof p.lat!=='number')return;
+    const marker=L.marker([p.lat,p.lng],{draggable:mode==='move',icon:sensorIcon(s)}).addTo(sensorLayer);
+    marker.bindTooltip(`${s.name}: ${sensorValue(s.key)}`,{permanent:true,direction:'right',offset:[20,0],className:'sensor-label'});
+    marker.on('dragend',e=>{const ll=e.target.getLatLng();fmap.sensors[s.key]={lat:+ll.lat.toFixed(7),lng:+ll.lng.toFixed(7)};render()});
+  });
+  recalc(); renderReadings();
+}
+function renderSvg(){
+  const svg=$('map'); svg.innerHTML='';
+  const pts=fmap.field||[];
+  if(pts.length){
+    svg.appendChild(el('polygon',{class:'field-poly',points:pts.map(p=>p.x+','+p.y).join(' ')}));
+    const xs=pts.map(p=>p.x), mid=(Math.min(...xs)+Math.max(...xs))/2;
+    svg.appendChild(el('line',{class:'zone-line',x1:mid,y1:70,x2:mid,y2:590}));
+    const z1=el('text',{class:'label',x:mid-190,y:95});z1.textContent='Zona 1';svg.appendChild(z1);
+    const z2=el('text',{class:'label',x:mid+120,y:95});z2.textContent='Zona 2';svg.appendChild(z2);
+  }
+  pts.forEach((p,i)=>{const c=el('circle',{class:'point',cx:p.x,cy:p.y,r:7});c.onpointerdown=e=>{drag={type:'point',i};c.setPointerCapture(e.pointerId)};svg.appendChild(c)});
+  const sensors=fmap.sensors||{};
+  SENSORS.forEach(s=>{
+    const p=sensors[s.key]||{x:500,y:320};
+    const g=el('g',{class:'sensor'});g.innerHTML=`<circle cx="${p.x}" cy="${p.y}" r="20" fill="${s.color}"></circle><text x="${p.x}" y="${p.y}">${s.label}</text><text class="label" x="${p.x+26}" y="${p.y+5}">${sensorValue(s.key)}</text>`;
+    g.onpointerdown=e=>{if(mode!=='move')return;drag={type:'sensor',key:s.key};g.setPointerCapture(e.pointerId)};
+    svg.appendChild(g);
+  });
+  recalc(); renderReadings();
+}
+function render(){
+  if (window.L && initLeaflet()) renderLeaflet();
+  else { $('real-map').style.display='none'; $('map').style.display='block'; renderSvg(); }
+}
+function clearField(){fmap.field=[];renderLeaflet.didFit=false;render()}
+$('map').addEventListener('click',e=>{if(mode!=='draw'||drag)return;const p=svgPoint(e);fmap.field.push({x:Math.round(p.x),y:Math.round(p.y)});render()});
+$('map').addEventListener('pointermove',e=>{if(!drag)return;const p=svgPoint(e);if(drag.type==='point')fmap.field[drag.i]={x:Math.round(p.x),y:Math.round(p.y)};else fmap.sensors[drag.key]={x:Math.round(p.x),y:Math.round(p.y)};render()});
+window.addEventListener('pointerup',()=>{drag=null});
+$('scale').addEventListener('input',recalc); $('depth').addEventListener('input',recalc);
+async function load(){
+  const r=await fetch('/api/field-map'); const d=await r.json(); fmap=d.field_map; live=d;
+  if(window.L) ensureGeoDefaults();
+  $('scale').value=fmap.scale_m_per_unit||1; $('depth').value=fmap.water_depth_mm||8; render();
+}
+async function refreshLive(){
+  try{const r=await fetch('/api/field-map'); const d=await r.json(); live=d; render()}catch(e){}
+}
+async function saveMap(){
+  recalc();
+  const r=await fetch('/api/field-map',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(fmap)});
+  if(!r.ok){toast('Save error');return}
+  const d=await r.json(); fmap=d.field_map; toast('Map saved'); render();
+}
+function useMyLocation(){
+  if(!navigator.geolocation){toast('Geolocation not available');return}
+  navigator.geolocation.getCurrentPosition(pos=>{
+    const center={lat:pos.coords.latitude,lng:pos.coords.longitude};
+    defaultGeo(center); renderLeaflet.didFit=false; if(leafletMap)leafletMap.setView([center.lat,center.lng],17); render();
+  },()=>toast('Location permission denied'));
+}
+load(); setInterval(refreshLive,5000);
+</script>
 </body>
 </html>
 """
