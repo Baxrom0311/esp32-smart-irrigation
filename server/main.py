@@ -590,22 +590,20 @@ def _apply_safety_and_overrides(
         pump2 = False
         notes.append("override:pump2=off")
 
-    # Hard safety: dry-run + sensor error => force OFF.
-    # BUT: Force ON override bypasses safety (operator knows best).
-    if o1 != "on":
-        if data.tank1_err or data.tank1 < s["tank_min"]:
-            if pump1:
-                notes.append(f"safety:pump1 off (tank1={data.tank1}% err={data.tank1_err})")
-            pump1 = False
-    if o2 != "on":
-        if data.tank2_err or data.tank2 < s["tank_min"]:
-            if pump2:
-                notes.append(f"safety:pump2 off (tank2={data.tank2}% err={data.tank2_err})")
-            pump2 = False
-    if data.soil1_err and pump1 and o1 != "on":
+    # Hard safety: dry-run + sensor error always force OFF. Manual ON beats
+    # AI/rules demand, but it must not beat physical safety gates.
+    if data.tank1_err or data.tank1 < s["tank_min"]:
+        if pump1:
+            notes.append(f"safety:pump1 off (tank1={data.tank1}% err={data.tank1_err})")
+        pump1 = False
+    if data.tank2_err or data.tank2 < s["tank_min"]:
+        if pump2:
+            notes.append(f"safety:pump2 off (tank2={data.tank2}% err={data.tank2_err})")
+        pump2 = False
+    if data.soil1_err and pump1:
         notes.append("safety:pump1 off (soil1 sensor error)")
         pump1 = False
-    if data.soil2_err and pump2 and o2 != "on":
+    if data.soil2_err and pump2:
         notes.append("safety:pump2 off (soil2 sensor error)")
         pump2 = False
 
@@ -2495,7 +2493,7 @@ FIELD_MAP_HTML = r"""<!DOCTYPE html>
 :root{color-scheme:dark;--bg:#0b1220;--panel:#111c2e;--panel2:#17243a;--line:#253653;--txt:#e6edf3;--muted:#8aa0b8;--ok:#3ad29f;--warn:#fdba74;--err:#ff6b6b;--accent:#1f6feb}
 *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
 header{position:sticky;top:0;z-index:5;background:var(--panel);border-bottom:1px solid var(--line);padding:14px 20px;display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
-h1{font-size:18px;margin:0}.nav{display:flex;gap:8px;align-items:center}.nav a,.btn{border:1px solid var(--line);background:var(--panel2);color:var(--txt);text-decoration:none;border-radius:8px;padding:8px 11px;font-size:13px;cursor:pointer}.btn.primary{background:var(--accent);border-color:var(--accent)}.btn.danger{background:#3a1c26;border-color:#743044;color:#ffd7df}
+h1{font-size:18px;margin:0}.nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.nav a,.btn,.lang-btn{border:1px solid var(--line);background:var(--panel2);color:var(--txt);text-decoration:none;border-radius:8px;padding:8px 11px;font-size:13px;cursor:pointer}.btn.primary{background:var(--accent);border-color:var(--accent)}.btn.danger{background:#3a1c26;border-color:#743044;color:#ffd7df}.lang-switch{display:flex;gap:4px}.lang-btn{padding:7px 9px;font-size:11px;font-weight:800;color:var(--muted)}.lang-btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
 main{max-width:1320px;margin:0 auto;padding:18px;display:grid;grid-template-columns:320px minmax(0,1fr);gap:16px}
 section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
 h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin:0 0 12px}.field{display:grid;gap:5px;margin-bottom:12px}.field label{font-size:12px;color:var(--muted)}.field input{width:100%;border:1px solid var(--line);background:var(--bg);color:var(--txt);border-radius:8px;padding:9px 10px}
@@ -2515,56 +2513,74 @@ h2{font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.5p
 </head>
 <body>
 <header>
-  <h1>Field Map · Smart Irrigation AI</h1>
-  <div class="nav"><a href="/">Dashboard</a><button class="btn primary" onclick="saveMap()">Save map</button></div>
+  <h1 data-i18n="title">Field Map · Smart Irrigation AI</h1>
+  <div class="nav">
+    <a href="/" data-i18n="dashboard">Dashboard</a>
+    <div class="lang-switch">
+      <button type="button" class="lang-btn" data-lang="uz" onclick="setLang('uz')">UZ</button>
+      <button type="button" class="lang-btn" data-lang="ru" onclick="setLang('ru')">RU</button>
+      <button type="button" class="lang-btn" data-lang="en" onclick="setLang('en')">EN</button>
+    </div>
+    <button class="btn primary" onclick="saveMap()" data-i18n="save_map">Save map</button>
+  </div>
 </header>
 <main>
   <div>
     <section>
-      <h2>Maydon sozlamalari</h2>
-      <div class="field"><label>Scale: 1 grid unit necha metr?</label><input id="scale" type="number" min="0.05" step="0.05"></div>
-      <div class="field"><label>Sug'orish chuqurligi, mm</label><input id="depth" type="number" min="0.1" max="100" step="0.5"></div>
-      <div class="stat"><span>Maydon yuzasi</span><strong id="area" class="big">—</strong></div>
-      <div class="stat"><span>Zona 1 taxminiy</span><strong id="zone1-area">—</strong></div>
-      <div class="stat"><span>Zona 2 taxminiy</span><strong id="zone2-area">—</strong></div>
-      <div class="stat"><span>Bir sug'orish suv hajmi</span><strong id="water-liters">—</strong></div>
+      <h2 data-i18n="field_settings">Maydon sozlamalari</h2>
+      <div class="field"><label data-i18n="scale_label">Scale: 1 grid unit necha metr?</label><input id="scale" type="number" min="0.05" step="0.05"></div>
+      <div class="field"><label data-i18n="depth_label">Sug'orish chuqurligi, mm</label><input id="depth" type="number" min="0.1" max="100" step="0.5"></div>
+      <div class="stat"><span data-i18n="field_area">Maydon yuzasi</span><strong id="area" class="big">—</strong></div>
+      <div class="stat"><span data-i18n="zone1_area">Zona 1 taxminiy</span><strong id="zone1-area">—</strong></div>
+      <div class="stat"><span data-i18n="zone2_area">Zona 2 taxminiy</span><strong id="zone2-area">—</strong></div>
+      <div class="stat"><span data-i18n="water_volume">Bir sug'orish suv hajmi</span><strong id="water-liters">—</strong></div>
       <div class="toolbar">
-        <button class="btn" onclick="setMode('draw')">Draw field</button>
-        <button class="btn" onclick="setMode('move')">Move sensors</button>
-        <button class="btn" onclick="useMyLocation()">My location</button>
-        <button class="btn danger" onclick="clearField()">Clear field</button>
+        <button class="btn" onclick="setMode('draw')" data-i18n="draw_field">Draw field</button>
+        <button class="btn" onclick="setMode('move')" data-i18n="move_sensors">Move sensors</button>
+        <button class="btn" onclick="useMyLocation()" data-i18n="my_location">My location</button>
+        <button class="btn danger" onclick="clearField()" data-i18n="clear_field">Clear field</button>
       </div>
-      <p class="hint">Dalani chizish uchun xarita ustiga ketma-ket bosing. Nuqtalarni sudrab tuzating. Scale real o'lchamga bog'laydi: area = grid area × scale².</p>
+      <p class="hint" data-i18n="draw_hint">Dalani chizish uchun xarita ustiga ketma-ket bosing. Nuqtalarni sudrab tuzating. Scale real o'lchamga bog'laydi: area = grid area × scale².</p>
     </section>
     <section style="margin-top:12px">
-      <h2>Sensorlar</h2>
+      <h2 data-i18n="sensors">Sensorlar</h2>
       <div id="sensor-readings"></div>
-      <p class="hint">Markerlarni real sensor joyiga olib boring. Dashboarddagi sensor data shu maydon ustida ko'rinadi.</p>
+      <p class="hint" data-i18n="sensor_hint">Markerlarni real sensor joyiga olib boring. Dashboarddagi sensor data shu maydon ustida ko'rinadi.</p>
     </section>
   </div>
   <section>
-    <h2>Interaktiv dala xaritasi</h2>
+    <h2 data-i18n="interactive_map">Interaktiv dala xaritasi</h2>
     <div class="map-wrap">
       <div id="real-map"></div>
       <svg id="map" viewBox="0 0 1000 650" preserveAspectRatio="xMidYMid meet"></svg>
-      <div class="map-note" id="map-note">Mode: draw field. Satellite map: Esri World Imagery. OpenStreetMap ishlatilmaydi.</div>
+      <div class="map-note" id="map-note"></div>
     </div>
   </section>
 </main>
 <div id="toast" class="toast"></div>
 <script>
+const T={
+  uz:{title:'Dala xaritasi · Smart Irrigation AI',dashboard:'Dashboard',save_map:'Xaritani saqlash',field_settings:'Maydon sozlamalari',scale_label:'Masshtab: 1 grid unit necha metr?',depth_label:"Sug'orish chuqurligi, mm",field_area:'Maydon yuzasi',zone1_area:'Zona 1 taxminiy',zone2_area:'Zona 2 taxminiy',water_volume:"Bir sug'orish suv hajmi",draw_field:'Dalani chizish',move_sensors:"Sensorlarni ko'chirish",my_location:'Mening joylashuvim',clear_field:'Maydonni tozalash',draw_hint:"Dalani chizish uchun xarita ustiga ketma-ket bosing. Nuqtalarni sudrab tuzating. Real xaritada maydon koordinatalardan hisoblanadi.",sensors:'Sensorlar',sensor_hint:"Markerlarni real sensor joyiga olib boring. Dashboarddagi sensor data shu maydon ustida ko'rinadi.",interactive_map:'Interaktiv dala xaritasi',mode_draw:'dala chizish',mode_move:"sensor ko'chirish",map_note:'Rejim: {mode}. Satellite map: Esri World Imagery. OpenStreetMap ishlatilmaydi.',zone1:'Zona 1',zone2:'Zona 2',soil1:'Soil 1',soil2:'Soil 2',tank1:'Tank 1',tank2:'Tank 2',save_error:'Saqlashda xato',map_saved:'Xarita saqlandi',geo_unavailable:'Geolocation mavjud emas',geo_denied:'Joylashuv ruxsati berilmadi'},
+  ru:{title:'Карта поля · Smart Irrigation AI',dashboard:'Панель',save_map:'Сохранить карту',field_settings:'Настройки поля',scale_label:'Масштаб: сколько метров в 1 grid unit?',depth_label:'Глубина полива, мм',field_area:'Площадь поля',zone1_area:'Зона 1 примерно',zone2_area:'Зона 2 примерно',water_volume:'Объем воды за один полив',draw_field:'Нарисовать поле',move_sensors:'Переместить датчики',my_location:'Моя геопозиция',clear_field:'Очистить поле',draw_hint:'Чтобы нарисовать поле, последовательно нажимайте по карте. Точки можно перетаскивать. На реальной карте площадь считается по координатам.',sensors:'Датчики',sensor_hint:'Переместите маркеры в реальные места датчиков. Данные с dashboard будут видны на поле.',interactive_map:'Интерактивная карта поля',mode_draw:'рисование поля',mode_move:'перемещение датчиков',map_note:'Режим: {mode}. Спутниковая карта: Esri World Imagery. OpenStreetMap не используется.',zone1:'Зона 1',zone2:'Зона 2',soil1:'Soil 1',soil2:'Soil 2',tank1:'Tank 1',tank2:'Tank 2',save_error:'Ошибка сохранения',map_saved:'Карта сохранена',geo_unavailable:'Geolocation недоступна',geo_denied:'Доступ к геопозиции запрещен'},
+  en:{title:'Field Map · Smart Irrigation AI',dashboard:'Dashboard',save_map:'Save map',field_settings:'Field settings',scale_label:'Scale: meters per grid unit',depth_label:'Irrigation depth, mm',field_area:'Field area',zone1_area:'Zone 1 estimate',zone2_area:'Zone 2 estimate',water_volume:'Water volume per irrigation',draw_field:'Draw field',move_sensors:'Move sensors',my_location:'My location',clear_field:'Clear field',draw_hint:'Click the map in sequence to draw the field. Drag points to adjust them. On the real map, area is calculated from coordinates.',sensors:'Sensors',sensor_hint:'Move markers to real sensor positions. Dashboard sensor data is shown over this field.',interactive_map:'Interactive field map',mode_draw:'draw field',mode_move:'move sensors',map_note:'Mode: {mode}. Satellite map: Esri World Imagery. OpenStreetMap is not used.',zone1:'Zone 1',zone2:'Zone 2',soil1:'Soil 1',soil2:'Soil 2',tank1:'Tank 1',tank2:'Tank 2',save_error:'Save error',map_saved:'Map saved',geo_unavailable:'Geolocation is not available',geo_denied:'Location permission denied'}
+};
+let lang=(()=>{try{const v=localStorage.getItem('lang');if(T[v])return v}catch(e){}return 'uz'})();
+function tr(k){return T[lang]?.[k]||T.uz[k]||k}
+function trf(k,vars){let s=tr(k);for(const x in vars||{})s=s.replaceAll('{'+x+'}',vars[x]);return s}
+function setLang(l){if(!T[l])return;lang=l;try{localStorage.setItem('lang',l)}catch(e){}applyLang();render()}
+function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-i18n]').forEach(e=>e.textContent=tr(e.dataset.i18n));document.querySelectorAll('.lang-btn').forEach(b=>b.classList.toggle('active',b.dataset.lang===lang));setMode(mode,false);document.title=tr('title')}
 const NS='http://www.w3.org/2000/svg';
 const SENSORS=[
-  {key:'soil1', label:'S1', name:'Soil 1', color:'#3ad29f'},
-  {key:'soil2', label:'S2', name:'Soil 2', color:'#5ac8fa'},
-  {key:'tank1', label:'T1', name:'Tank 1', color:'#fdba74'},
-  {key:'tank2', label:'T2', name:'Tank 2', color:'#c084fc'},
+  {key:'soil1', label:'S1', nameKey:'soil1', color:'#3ad29f'},
+  {key:'soil2', label:'S2', nameKey:'soil2', color:'#5ac8fa'},
+  {key:'tank1', label:'T1', nameKey:'tank1', color:'#fdba74'},
+  {key:'tank2', label:'T2', nameKey:'tank2', color:'#c084fc'},
 ];
 let mode='draw', fmap=null, live=null, drag=null, leafletMap=null, fieldLayer=null, pointLayer=null, sensorLayer=null;
 const $=id=>document.getElementById(id);
 function el(n,a){const x=document.createElementNS(NS,n); if(a)for(const k in a)x.setAttribute(k,a[k]); return x}
 function toast(t){const e=$('toast');e.textContent=t;e.className='toast show';clearTimeout(toast.t);toast.t=setTimeout(()=>e.className='toast',2200)}
-function setMode(m){mode=m;$('map-note').textContent='Mode: '+(m==='draw'?'draw field points':'move sensor markers')+'. Satellite map: Esri World Imagery. OpenStreetMap ishlatilmaydi.'; if(fmap)render()}
+function setMode(m,rerender=true){mode=m;$('map-note').textContent=trf('map_note',{mode:m==='draw'?tr('mode_draw'):tr('mode_move')}); if(rerender&&fmap)render()}
 function svgPoint(evt){const svg=$('map'), p=svg.createSVGPoint();p.x=evt.clientX;p.y=evt.clientY;const r=p.matrixTransform(svg.getScreenCTM().inverse());return {x:Math.max(0,Math.min(1000,r.x)),y:Math.max(0,Math.min(650,r.y))}}
 function areaGrid(points){let s=0;for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];s+=a.x*b.y-b.x*a.y}return Math.abs(s)/2}
 function hasGeo(points){return Array.isArray(points)&&points.length&&points.every(p=>p&&typeof p.lat==='number'&&typeof p.lng==='number')}
@@ -2588,7 +2604,7 @@ function renderReadings(){
   const d=live?.data||{}, online=!!live?.online;
   $('sensor-readings').innerHTML=SENSORS.map(s=>{
     let cls='ok'; if(!online)cls='err'; else if(d[s.key+'_err'])cls='err';
-    return `<span class="badge"><i class="dot ${cls}"></i>${s.name}: <strong>${sensorValue(s.key)}</strong></span>`;
+    return `<span class="badge"><i class="dot ${cls}"></i>${tr(s.nameKey)}: <strong>${sensorValue(s.key)}</strong></span>`;
   }).join('');
 }
 function initLeaflet(){
@@ -2626,7 +2642,7 @@ function renderLeaflet(){
   SENSORS.forEach(s=>{
     const p=sensors[s.key]; if(!p||typeof p.lat!=='number')return;
     const marker=L.marker([p.lat,p.lng],{draggable:mode==='move',icon:sensorIcon(s)}).addTo(sensorLayer);
-    marker.bindTooltip(`${s.name}: ${sensorValue(s.key)}`,{permanent:true,direction:'right',offset:[20,0],className:'sensor-label'});
+    marker.bindTooltip(`${tr(s.nameKey)}: ${sensorValue(s.key)}`,{permanent:true,direction:'right',offset:[20,0],className:'sensor-label'});
     marker.on('dragend',e=>{const ll=e.target.getLatLng();fmap.sensors[s.key]={lat:+ll.lat.toFixed(7),lng:+ll.lng.toFixed(7)};render()});
   });
   recalc(); renderReadings();
@@ -2638,8 +2654,8 @@ function renderSvg(){
     svg.appendChild(el('polygon',{class:'field-poly',points:pts.map(p=>p.x+','+p.y).join(' ')}));
     const xs=pts.map(p=>p.x), mid=(Math.min(...xs)+Math.max(...xs))/2;
     svg.appendChild(el('line',{class:'zone-line',x1:mid,y1:70,x2:mid,y2:590}));
-    const z1=el('text',{class:'label',x:mid-190,y:95});z1.textContent='Zona 1';svg.appendChild(z1);
-    const z2=el('text',{class:'label',x:mid+120,y:95});z2.textContent='Zona 2';svg.appendChild(z2);
+    const z1=el('text',{class:'label',x:mid-190,y:95});z1.textContent=tr('zone1');svg.appendChild(z1);
+    const z2=el('text',{class:'label',x:mid+120,y:95});z2.textContent=tr('zone2');svg.appendChild(z2);
   }
   pts.forEach((p,i)=>{const c=el('circle',{class:'point',cx:p.x,cy:p.y,r:7});c.onpointerdown=e=>{drag={type:'point',i};c.setPointerCapture(e.pointerId)};svg.appendChild(c)});
   const sensors=fmap.sensors||{};
@@ -2671,17 +2687,17 @@ async function refreshLive(){
 async function saveMap(){
   recalc();
   const r=await fetch('/api/field-map',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(fmap)});
-  if(!r.ok){toast('Save error');return}
-  const d=await r.json(); fmap=d.field_map; toast('Map saved'); render();
+  if(!r.ok){toast(tr('save_error'));return}
+  const d=await r.json(); fmap=d.field_map; toast(tr('map_saved')); render();
 }
 function useMyLocation(){
-  if(!navigator.geolocation){toast('Geolocation not available');return}
+  if(!navigator.geolocation){toast(tr('geo_unavailable'));return}
   navigator.geolocation.getCurrentPosition(pos=>{
     const center={lat:pos.coords.latitude,lng:pos.coords.longitude};
     defaultGeo(center); renderLeaflet.didFit=false; if(leafletMap)leafletMap.setView([center.lat,center.lng],17); render();
-  },()=>toast('Location permission denied'));
+  },()=>toast(tr('geo_denied')));
 }
-load(); setInterval(refreshLive,5000);
+applyLang(); load(); setInterval(refreshLive,5000);
 </script>
 </body>
 </html>

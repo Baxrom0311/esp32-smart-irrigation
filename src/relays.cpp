@@ -13,7 +13,7 @@
 // runtime clears after LOCKOUT_RUNTIME_COOLDOWN_MS.
 //
 // Request sources:
-//   - Web (manual mode only): grant if no lockout, ignore otherwise.
+//   - Web/manual/server: demand is accepted only after local safety gates.
 //   - Auto: only when settings.autoMode is true; soil < threshold
 //     drives demand ON, soil > threshold + hysteresis drives OFF.
 
@@ -270,52 +270,48 @@ void relaysTick(SystemState& state) {
         uint8_t  tankPct = (i == 0) ? s.tank1Pct : s.tank2Pct;
         bool     tankErr = (i == 0) ? s.tank1Err : s.tank2Err;
 
-        // 1) When server controls, skip local lockouts (server handles safety).
-        //    When offline, apply local safety lockouts.
-        if (!serverHasDecision()) {
-            bool dry = !tankErr && (tankPct < cfg.minWaterPct);
-            if (tankErr) {
-                drivePump(state, p, i, false, now);
-                p.fsm = PumpFsm::LockoutSensor;
-            } else if (dry) {
-                drivePump(state, p, i, false, now);
-                p.fsm = PumpFsm::LockoutDryRun;
-            } else if (p.fsm == PumpFsm::LockoutRuntime &&
-                       isLockoutActive(now, p.lockoutUntilMs)) {
-                drivePump(state, p, i, false, now);
-            } else {
-                // Clear lockouts when conditions recover
-                if (p.fsm == PumpFsm::LockoutDryRun &&
-                    tankPct >= cfg.minWaterPct + SAFETY_HYSTERESIS_PCT) {
-                    p.fsm = PumpFsm::Off;
-                }
-                if (p.fsm == PumpFsm::LockoutSensor && !tankErr) {
-                    p.fsm = PumpFsm::Off;
-                }
-                if (p.fsm == PumpFsm::LockoutRuntime &&
-                    !isLockoutActive(now, p.lockoutUntilMs)) {
-                    p.fsm = PumpFsm::Off;
-                    p.lockoutUntilMs = 0;
-                }
-            }
+        // 1) Local safety is always authoritative. The cloud/server may
+        //    provide demand, but ESP32 remains the final physical guard.
+        bool dry = !tankErr && (tankPct < cfg.minWaterPct);
+        if (tankErr) {
+            drivePump(state, p, i, false, now);
+            p.fsm = PumpFsm::LockoutSensor;
+        } else if (dry) {
+            drivePump(state, p, i, false, now);
+            p.fsm = PumpFsm::LockoutDryRun;
+        } else if (p.fsm == PumpFsm::LockoutRuntime &&
+                   isLockoutActive(now, p.lockoutUntilMs)) {
+            drivePump(state, p, i, false, now);
         } else {
-            // Server is in control — clear any stale lockout
-            if (p.fsm != PumpFsm::Off && p.fsm != PumpFsm::On) {
+            // Clear lockouts when conditions recover
+            if (p.fsm == PumpFsm::LockoutDryRun &&
+                tankPct >= cfg.minWaterPct + SAFETY_HYSTERESIS_PCT) {
                 p.fsm = PumpFsm::Off;
+            }
+            if (p.fsm == PumpFsm::LockoutSensor && !tankErr) {
+                p.fsm = PumpFsm::Off;
+            }
+            if (p.fsm == PumpFsm::LockoutRuntime &&
+                !isLockoutActive(now, p.lockoutUntilMs)) {
+                p.fsm = PumpFsm::Off;
+                p.lockoutUntilMs = 0;
             }
         }
 
         // 2) Demand evaluation.
-        //    Server decision always wins when available.
-        //    Offline: use local threshold if autoMode.
-        if (serverHasDecision()) {
-            g_demand[i] = serverGetPumpDecision(i);
-        } else if (cfg.autoMode) {
-            uint8_t soilPct = (i == 0) ? s.soil1Pct : s.soil2Pct;
-            bool    soilErr = (i == 0) ? s.soil1Err : s.soil2Err;
-            g_demand[i] = evaluateAutoDemand(soilPct, soilErr,
-                                             cfg.soilThresholdPct,
-                                             g_demand[i]);
+        //    Server/auto decisions apply ONLY in auto mode.
+        //    In manual mode g_demand is set by requestPump() and must
+        //    not be clobbered here — that is the whole point of manual.
+        if (cfg.autoMode) {
+            if (serverHasDecision()) {
+                g_demand[i] = serverGetPumpDecision(i);
+            } else {
+                uint8_t soilPct = (i == 0) ? s.soil1Pct : s.soil2Pct;
+                bool    soilErr = (i == 0) ? s.soil1Err : s.soil2Err;
+                g_demand[i] = evaluateAutoDemand(soilPct, soilErr,
+                                                 cfg.soilThresholdPct,
+                                                 g_demand[i]);
+            }
         }
 
         // 3) Apply demand if FSM is runnable.
