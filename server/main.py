@@ -590,15 +590,24 @@ def _apply_safety_and_overrides(
         pump2 = False
         notes.append("override:pump2=off")
 
-    # Hard safety: dry-run + sensor error always force OFF. Manual ON beats
-    # AI/rules demand, but it must not beat physical safety gates.
-    if data.tank1_err or data.tank1 < s["tank_min"]:
+    # Hard safety: sensor errors always force OFF regardless of override.
+    # tank_min (dry-run protection) is only enforced in auto mode — a manual
+    # "on" override means the operator has decided to run the pump consciously.
+    if data.tank1_err:
         if pump1:
-            notes.append(f"safety:pump1 off (tank1={data.tank1}% err={data.tank1_err})")
+            notes.append(f"safety:pump1 off (tank1 sensor error)")
         pump1 = False
-    if data.tank2_err or data.tank2 < s["tank_min"]:
+    elif o1 != "on" and data.tank1 < s["tank_min"]:
+        if pump1:
+            notes.append(f"safety:pump1 off (tank1={data.tank1}%<{s['tank_min']}%)")
+        pump1 = False
+    if data.tank2_err:
         if pump2:
-            notes.append(f"safety:pump2 off (tank2={data.tank2}% err={data.tank2_err})")
+            notes.append(f"safety:pump2 off (tank2 sensor error)")
+        pump2 = False
+    elif o2 != "on" and data.tank2 < s["tank_min"]:
+        if pump2:
+            notes.append(f"safety:pump2 off (tank2={data.tank2}%<{s['tank_min']}%)")
         pump2 = False
     if data.soil1_err and pump1:
         notes.append("safety:pump1 off (soil1 sensor error)")
@@ -1808,6 +1817,7 @@ let lastSettings = null;
 let lastStatus = null;
 let lastChartPts = null;
 let lastChartUpdate = 0;
+let settingsDirty = false;
 
 function fmtAge(sec){
   if (sec == null) return tr('never');
@@ -1876,7 +1886,7 @@ function pumpDecisionText(dec){
   return tr('pump1_name') + ' ' + p1 + ' · ' + tr('pump2_name') + ' ' + p2;
 }
 
-function zoneDiagnosis(num, data, decision, online){
+function zoneDiagnosis(num, data, decision, online, overrides){
   const settings = lastSettings || {};
   const soil = num === 1 ? data.soil1 : data.soil2;
   const tank = num === 1 ? data.tank1 : data.tank2;
@@ -1885,6 +1895,7 @@ function zoneDiagnosis(num, data, decision, online){
   const pumpOn = !!(decision && decision['pump' + num]);
   const soilLow = settings.soil_low ?? 35;
   const tankMin = settings.tank_min ?? 20;
+  const ovr = (overrides || {})[String(num)] || 'auto';
 
   if (!online) {
     return {level:'err', status:tr('conn_offline'), lockout:tr('reason_no_data'), rec:tr('rec_wait_data')};
@@ -1892,8 +1903,15 @@ function zoneDiagnosis(num, data, decision, online){
   if (soilErr || tankErr) {
     return {level:'err', status:tr('status_critical'), lockout:tr('sensor_lockout'), rec:tr('rec_check_sensor')};
   }
-  if (tank != null && tank < tankMin) {
+  // tank_min check skipped when pump is manually forced on (operator decision)
+  if (tank != null && tank < tankMin && ovr !== 'on') {
     return {level:'err', status:tr('status_critical'), lockout:tr('tank_low_lockout'), rec:tr('rec_fill_tank')};
+  }
+  if (ovr === 'on') {
+    return {level:'warn', status:tr('status_warn'), lockout:tr('reason_override')+': '+tr('mode_on'), rec:pumpOn ? tr('runtime_wait') : tr('rec_wait_data')};
+  }
+  if (ovr === 'off') {
+    return {level:'ok', status:tr('status_ok'), lockout:tr('reason_override')+': '+tr('mode_off'), rec:tr('rec_stable')};
   }
   if (soil != null && soil < soilLow) {
     return {
@@ -1906,8 +1924,8 @@ function zoneDiagnosis(num, data, decision, online){
   return {level:'ok', status:tr('status_ok'), lockout:tr('no_lockout'), rec:tr('rec_stable')};
 }
 
-function renderZone(num, data, decision, online){
-  const z = zoneDiagnosis(num, data, decision, online);
+function renderZone(num, data, decision, online, overrides){
+  const z = zoneDiagnosis(num, data, decision, online, overrides);
   const soil = num === 1 ? data.soil1 : data.soil2;
   const tank = num === 1 ? data.tank1 : data.tank2;
   const pumpOn = !!(decision && decision['pump' + num]);
@@ -1928,8 +1946,9 @@ function renderOverview(d){
   const data = d.data || {};
   const dec = d.decision || {};
   const online = !!d.online;
-  const z1 = renderZone(1, data, dec, online);
-  const z2 = renderZone(2, data, dec, online);
+  const ovr = d.overrides || {};
+  const z1 = renderZone(1, data, dec, online, ovr);
+  const z2 = renderZone(2, data, dec, online, ovr);
   $('decision-main').textContent = pumpDecisionText(dec);
   $('decision-reason').textContent = translatePumpReason(dec.reason);
   let level = 'ok';
@@ -1958,15 +1977,19 @@ function applyDynamicLabels(){
   $('decision-reason').textContent = translatePumpReason(dec.reason);
   renderOverview(d);
   ['1','2'].forEach(num => {
-    const on = !!dec['pump'+num];
+    const actualData = d.data || {};
+    const actual = !!(actualData['pump'+num]);  // ESP32 haqiqiy holati
+    const decided = !!dec['pump'+num];
     const stateEl = $('p'+num+'-state');
     if (!stateEl.classList.contains('pending')){
-      stateEl.textContent = on ? tr('state_on') : tr('state_off');
+      stateEl.textContent = actual ? tr('state_on') : tr('state_off');
     }
     $('p'+num+'-reason').textContent = translatePumpReason(dec.reason);
     const m = ovr[num] || 'auto';
     const modeMap = {auto: tr('mode_auto'), on: tr('mode_on'), off: tr('mode_off')};
-    $('p'+num+'-mode').textContent = tr('mode_prefix') + ' ' + (modeMap[m] || m);
+    const safetyBlocked = m === 'on' && !actual && !decided;
+    $('p'+num+'-mode').textContent = tr('mode_prefix') + ' ' + (modeMap[m] || m)
+                                   + (safetyBlocked ? ' ⚠' : '');
   });
 }
 
@@ -2094,20 +2117,25 @@ async function poll(){
     if (s.tank1_err){ $('t1').textContent='ERR'; $('t1').className='err'; } else $('t1').className='';
     if (s.tank2_err){ $('t2').textContent='ERR'; $('t2').className='err'; } else $('t2').className='';
 
-    // pumps
+    // pumps — show actual ESP32 state (data.pump1/2), not server decision
     const dec = d.decision || {};
     const ovr = d.overrides || {'1':'auto','2':'auto'};
+    const sdata = d.data || {};
     function paintPump(num){
-      const on = !!dec['pump'+num];
+      const actual = !!(sdata['pump'+num]);   // what ESP32 is physically doing
+      const decided = !!dec['pump'+num];      // what server decided
       const el = $('p'+num+'-state');
       if (!el.classList.contains('pending')){
-        el.textContent = on ? tr('state_on') : tr('state_off');
-        el.className = 'pump-state ' + (on?'on':'off');
+        el.textContent = actual ? tr('state_on') : tr('state_off');
+        el.className = 'pump-state ' + (actual?'on':'off');
       }
       $('p'+num+'-reason').textContent = translatePumpReason(dec.reason);
       const m = ovr[String(num)] || 'auto';
       const modeMap = {auto: tr('mode_auto'), on: tr('mode_on'), off: tr('mode_off')};
-      $('p'+num+'-mode').textContent = tr('mode_prefix') + ' ' + (modeMap[m] || m);
+      // Show safety warning when override is "on" but pump is actually off
+      const safetyBlocked = m === 'on' && !actual && !decided;
+      $('p'+num+'-mode').textContent = tr('mode_prefix') + ' ' + (modeMap[m] || m)
+                                     + (safetyBlocked ? ' ⚠' : '');
       document.querySelectorAll('.btn[data-pump="'+num+'"]').forEach(b => {
         b.classList.toggle('active', b.dataset.mode === (ovr[String(num)] || 'auto'));
       });
@@ -2119,7 +2147,7 @@ async function poll(){
     $('decision-source').className = dec.source==='ai' ? 'ok' : (dec.source==='rules' ? 'warn' : 'muted');
 
     // settings (only fill if user is not currently editing)
-    if (lastSettings && document.activeElement.tagName !== 'INPUT'){
+    if (lastSettings && !settingsDirty && document.activeElement.tagName !== 'INPUT'){
       $('set-soil-low').value  = lastSettings.soil_low;
       $('set-soil-high').value = lastSettings.soil_high;
       $('set-tank-min').value  = lastSettings.tank_min;
@@ -2342,16 +2370,23 @@ document.querySelectorAll('.btn[data-pump]').forEach(b => {
       });
       if (!r.ok) throw new Error('http '+r.status);
 
-      // Wait for ESP32 to confirm (poll until state changes, max 45s)
+      // Wait for ESP32 to confirm actual state change (max 45s).
+      // Auto mode has no deterministic state to wait for — just let one
+      // poll cycle pass so the UI refreshes with the new override setting.
       const wantOn = mode === 'on';
       const wantOff = mode === 'off';
       let confirmed = false;
-      for (let i = 0; i < 15; i++){
+      const maxIter = mode === 'auto' ? 1 : 15;
+      for (let i = 0; i < maxIter; i++){
         await new Promise(ok => setTimeout(ok, 3000));
         const sr = await fetch('/api/status');
         const sd = await sr.json();
+        if (mode === 'auto'){
+          confirmed = true;  // auto has no definite "on/off" to check
+          break;
+        }
         const actual = pump === 1 ? sd.data.pump1 : sd.data.pump2;
-        if (mode === 'auto' || (wantOn && actual) || (wantOff && !actual)){
+        if ((wantOn && actual) || (wantOff && !actual)){
           confirmed = true;
           break;
         }
@@ -2372,19 +2407,37 @@ document.querySelectorAll('.btn[data-pump]').forEach(b => {
     } finally{
       pendingPumps[pump] = false;
       pumpBtns.forEach(btn => { btn.disabled = false; btn.style.opacity = '1'; });
+      // Clear pending class so paintPump can update the actual state
+      const pendingEl = $('p'+pump+'-state');
+      if (pendingEl) pendingEl.classList.remove('pending');
       poll();
     }
   });
 });
 
 // ---------- settings ----------
+// Mark settings dirty when user edits any field so poll won't overwrite them.
+['set-soil-low','set-soil-high','set-tank-min','set-max-min'].forEach(id => {
+  const el = $(id);
+  if (el) el.addEventListener('input', () => { settingsDirty = true; });
+});
+
 async function saveSettings(){
-  const body = {
-    soil_low:  parseInt($('set-soil-low').value, 10),
-    soil_high: parseInt($('set-soil-high').value, 10),
-    tank_min:  parseInt($('set-tank-min').value, 10),
-    max_pump_minutes: parseInt($('set-max-min').value, 10),
-  };
+  const soilLow  = parseInt($('set-soil-low').value, 10);
+  const soilHigh = parseInt($('set-soil-high').value, 10);
+  const tankMin  = parseInt($('set-tank-min').value, 10);
+  const maxMin   = parseInt($('set-max-min').value, 10);
+
+  if (isNaN(soilLow) || isNaN(soilHigh) || isNaN(tankMin) || isNaN(maxMin)){
+    showToast(tr('save_error') + ' (bo\'sh maydon)', 'err');
+    return;
+  }
+  if (soilLow >= soilHigh){
+    showToast(tr('save_error') + ' (quyi chegara yuqoridan katta)', 'err');
+    return;
+  }
+
+  const body = { soil_low: soilLow, soil_high: soilHigh, tank_min: tankMin, max_pump_minutes: maxMin };
   const btn = $('save-btn');
   try{
     const r = await fetch('/api/settings', {
@@ -2393,8 +2446,9 @@ async function saveSettings(){
       body: JSON.stringify(body),
     });
     const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || tr('save_error'));
+    if (!r.ok) throw new Error(Array.isArray(d.detail) ? d.detail.map(e=>e.msg).join('; ') : (d.detail || tr('save_error')));
     lastSettings = d.settings;
+    settingsDirty = false;
     showToast(tr('settings_saved_toast'), 'ok');
     // Visual feedback on the button itself.
     btn.classList.add('saved');
